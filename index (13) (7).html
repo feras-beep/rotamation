@@ -1,0 +1,981 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Neurosurgical SHO Rota Generator</title>
+  <!-- Load the SheetJS library from a CDN.  This is required to parse Excel files. -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <style>
+    body {
+      font-family: Arial, Helvetica, sans-serif;
+      margin: 20px;
+      background-color: #f9fbfd;
+      color: #2c3e50;
+    }
+    h1 {
+      color: #34495e;
+      margin-bottom: 10px;
+    }
+    .section {
+      background: #fff;
+      border: 1px solid #e1e4e8;
+      border-radius: 6px;
+      padding: 20px;
+      margin-top: 20px;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+    }
+    label {
+      display: inline-block;
+      margin: 6px 0;
+    }
+    input[type="file"] {
+      margin-left: 10px;
+    }
+    input[type="number"] {
+      width: 80px;
+      padding: 4px;
+      margin-left: 5px;
+    }
+    button {
+      background-color: #2ecc71;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 4px;
+      font-size: 16px;
+      cursor: pointer;
+      margin-top: 10px;
+    }
+    button:disabled {
+      background-color: #bdc3c7;
+      cursor: not-allowed;
+    }
+    button:hover:not(:disabled) {
+      background-color: #27ae60;
+    }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      margin-top: 10px;
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    th, td {
+      border: 1px solid #ecf0f1;
+      padding: 8px;
+      text-align: left;
+    }
+    th {
+      background-color: #f2f4f7;
+    }
+    tr:nth-child(even) {
+      background-color: #fafafa;
+    }
+    pre {
+      background-color: #f7f9fb;
+      padding: 12px;
+      border: 1px solid #e1e4e8;
+      border-radius: 4px;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+    .hidden {
+      display: none;
+    }
+    .warning {
+      color: #c0392b;
+      font-style: italic;
+    }
+
+    h2 {
+      color: #2c3e50;
+      border-bottom: 1px solid #ecf0f1;
+      padding-bottom: 5px;
+      margin-top: 20px;
+    }
+    h3 {
+      margin-top: 15px;
+      color: #34495e;
+    }
+  </style>
+</head>
+<body>
+  <h1>Neurosurgical SHO Rota Generator</h1>
+  <p>Select your weekly rota Excel file and enter the number of admissions for each day to generate team allocations, clerking duties and daily messages.</p>
+  <div class="section">
+    <label for="file-input">Upload rota (.xlsx): </label>
+    <input type="file" id="file-input" accept=".xlsx,.xls">
+  </div>
+  <div id="admissions-section" class="section hidden">
+    <h2>Daily Workload</h2>
+    <p>Specify the number of admissions requiring clerking and any additional doctors required on the wards for each day.</p>
+    <form id="admissions-form">
+      <!-- Inputs will be populated dynamically after loading the file -->
+    </form>
+    <button id="generate-btn" type="button">Generate Rota</button>
+  </div>
+  <div id="results-section" class="section hidden">
+    <h2>Weekly Team Allocation</h2>
+    <div id="assignments-table"></div>
+    <h2>Clerking Assignments</h2>
+    <div id="clerking-table"></div>
+    <h2>Daily Messages</h2>
+    <div id="messages"></div>
+  </div>
+
+  <!-- Section for marking doctors as absent/ill -->
+  <div id="absence-section" class="section hidden">
+    <h2>Absences / Illness</h2>
+    <p>Select any doctors who are absent or ill this week. They will be excluded from team and theatre allocations.</p>
+    <!-- Checkboxes populated dynamically -->
+  </div>
+
+  <script>
+  // Utility to parse a single shift cell into structured data
+  function parseShift(str) {
+    if (!str || typeof str !== 'string' || str.trim() === '' || str.trim() === '\u200b') {
+      return { available: false, start_time: null, assignment: null, on_call: false, night: false };
+    }
+    const s = str.trim().toUpperCase();
+    // Leave keywords
+    if (/^(AL|ZERO|INDUCTION|WEISS)\b/.test(s)) {
+      return { available: false, start_time: null, assignment: null, on_call: false, night: false };
+    }
+    // Night
+    if (s.includes('NIGHT')) {
+      return { available: false, start_time: null, assignment: null, on_call: false, night: true };
+    }
+    // On-call: treat as available for team assignment but mark on_call flag
+    if (s.includes('LD BLEEP') || s.includes('LD SECOND')) {
+      return { available: true, start_time: null, assignment: null, on_call: true, night: false };
+    }
+    let start_time = null;
+    if (s.includes('0700') || s.includes('07:00')) start_time = 7;
+    else if (s.includes('0800') || s.includes('08:00')) start_time = 8;
+    let assignment = null;
+    if (s.includes('PIT') || s.includes('EPI')) assignment = 'Pit/Epi';
+    if (s.includes('FUNCTION')) assignment = 'Functional';
+    if (s.includes('PG/WM')) assignment = 'PG/WM';
+    if (s.includes('AT/LW')) assignment = 'AT/LW';
+    if (s.includes('PC') && s.includes('MM')) assignment = 'PC/MM';
+    if (s.includes('TEAM C')) assignment = 'Team C';
+    if (s.includes('TEAM D')) assignment = 'Team D';
+    if (s.includes('TEAM A')) assignment = 'Team A';
+    if (s.includes('TEAM B')) assignment = 'Team B';
+    if (s.includes('THEATRE')) assignment = 'Theatre';
+    return { available: true, start_time: start_time, assignment: assignment, on_call: false, night: false };
+  }
+
+  // Parse the uploaded workbook into an array of doctor objects
+  function parseRota(workbook) {
+    const sheet = workbook.Sheets['SHO Rota'] || workbook.Sheets[workbook.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+    if (rows.length < 4) {
+      alert('Unexpected rota format');
+      return [];
+    }
+    const header = rows[1].slice();
+    // Replace missing header cell at index 1 with 'Name'
+    if (!header[1]) header[1] = 'Name';
+    // Build array of objects from row 3 onwards
+    const data = [];
+    let currentTeam = null;
+    for (let i = 3; i < rows.length; i++) {
+      const row = rows[i];
+      if (row.length === 0) continue;
+      const obj = {};
+      for (let j = 0; j < header.length; j++) {
+        const key = header[j];
+        obj[key] = row[j];
+      }
+      // Forward fill Team
+      if (obj['Team']) {
+        currentTeam = obj['Team'];
+      } else {
+        obj['Team'] = currentTeam;
+      }
+      data.push(obj);
+    }
+    return data;
+  }
+
+  // Assign doctors to team categories across the week
+  function assignWeek(data, days, predetermined, extraTeams = {}, absences = []) {
+    /*
+      Assign doctors to team categories across the week.
+      - predetermined: a mapping of doctor name -> category (fixed assignments)
+      - extraTeams: an object mapping day -> integer number of additional doctors to allocate to teams beyond the core categories.
+      - absences: an array of doctor names who should be considered unavailable for all days.
+    */
+    const absenceSet = new Set(absences.map(name => name.toUpperCase()));
+    // Map each doctor to their home team for preference-based allocation
+    const homeTeam = {};
+    data.forEach(row => { homeTeam[row['Name']] = row['Team']; });
+    let prevAssignment = {};
+    const assignments = {};
+    const shiftInfo = {};
+    // Core categories to fill; Theatres will be handled separately
+    const categoriesList = ['Pit/Epi','Functional','PG/WM','AT/LW','PC/MM','Team C1','Team C2','Team D'];
+    // Track how many times each doctor has been assigned to theatre to avoid
+    // sending the same person more than once when others are available.
+    const theatreCount = {};
+    days.forEach((day, dayIndex) => {
+      const dayAssign = {};
+      categoriesList.forEach(cat => dayAssign[cat] = null);
+      const avail = {};
+      const dayShiftInfo = {};
+      // Track predetermined doctors assigned to their fixed categories for this day
+      const predeterminedAssigned = [];
+      // Build availability: mark those not absent and available as per shift
+      data.forEach(row => {
+        const name = row['Name'];
+        const info = parseShift(row[day]);
+        dayShiftInfo[name] = info;
+        // Skip if absent
+        if (absenceSet.has(name.toUpperCase())) return;
+        // treat on-call (non-night) as available; nights remain unavailable
+        if (info.available) avail[name] = info;
+      });
+      // predetermined assignments
+      Object.entries(predetermined).forEach(([doctor, cat]) => {
+        if (avail.hasOwnProperty(doctor) && dayAssign.hasOwnProperty(cat) && dayAssign[cat] === null) {
+          dayAssign[cat] = doctor;
+          // record predetermined assignment for potential theatre consideration
+          predeterminedAssigned.push(doctor);
+          delete avail[doctor];
+        }
+      });
+      // continuity: keep doctors in their previous assignments when possible (except Theatres)
+      Object.keys(avail).forEach(doctor => {
+        const prevCat = prevAssignment[doctor];
+        if (prevCat && prevCat !== 'Theatres' && dayAssign.hasOwnProperty(prevCat) && dayAssign[prevCat] === null) {
+          dayAssign[prevCat] = doctor;
+          delete avail[doctor];
+        }
+      });
+      // fill by home team preference for remaining categories
+      const categoryToTeam = {
+        'Pit/Epi': 'Team A',
+        'Functional': 'Team A',
+        'PG/WM': 'Team B',
+        'AT/LW': 'Team B',
+        'PC/MM': 'Team B',
+        'Team C1': 'Team C',
+        'Team C2': 'Team C',
+        'Team D': 'TEAM D'
+      };
+      Object.keys(dayAssign).forEach(cat => {
+        if (dayAssign[cat] === null) {
+          const requiredTeam = categoryToTeam[cat];
+          let candidate = null;
+          for (const doc in avail) {
+            if (homeTeam[doc] === requiredTeam) {
+              candidate = doc;
+              break;
+            }
+          }
+          if (candidate) {
+            dayAssign[cat] = candidate;
+            delete avail[candidate];
+          }
+        }
+      });
+      // fill any remaining empty categories with available doctors
+      Object.keys(dayAssign).forEach(cat => {
+        if (dayAssign[cat] === null) {
+          const keys = Object.keys(avail);
+          if (keys.length > 0) {
+            const doc = keys[0];
+            dayAssign[cat] = doc;
+            delete avail[doc];
+          }
+        }
+      });
+      // Assign extra doctors to specific teams if requested for this day
+      const extraForDay = extraTeams[day] || {};
+      // If extraForDay is a number (fallback from older usage), convert to Team A extras
+      if (typeof extraForDay === 'number') {
+        extraForDay.A = extraForDay;
+      }
+      const teamToCategories = {
+        A: ['Pit/Epi','Functional'],
+        B: ['PG/WM','AT/LW','PC/MM'],
+        C: ['Team C1','Team C2'],
+        D: ['Team D']
+      };
+      // Build a sorted list of available doctors for consistent allocation
+      let extraAvail = Object.keys(avail).sort((a,b) => a.localeCompare(b));
+      // We'll maintain a pointer per team to round-robin over its categories
+      const teamIndices = { A: 0, B: 0, C: 0, D: 0 };
+      ['A','B','C','D'].forEach(team => {
+        const extraNum = extraForDay[team] || 0;
+        const cats = teamToCategories[team];
+        for (let i = 0; i < extraNum; i++) {
+          if (extraAvail.length === 0) break;
+          const doc = extraAvail.shift();
+          const cat = cats[teamIndices[team] % cats.length];
+          const current = dayAssign[cat];
+          if (Array.isArray(current)) {
+            current.push(doc);
+          } else if (current !== null && current !== undefined) {
+            dayAssign[cat] = [current, doc];
+          } else {
+            dayAssign[cat] = [doc];
+          }
+          teamIndices[team]++;
+        }
+      });
+      // After assigning extras, the removed docs will be cleaned up when we remove all docs assigned to categories below.
+      // Remove all doctors that were assigned to categories from avail
+      Object.values(dayAssign).forEach(val => {
+        if (!val) return;
+        if (Array.isArray(val)) {
+          val.forEach(name => { delete avail[name]; });
+        } else {
+          delete avail[val];
+        }
+      });
+      // After filling categories and assigning extras, assign doctors to theatre while ensuring fairness and coverage.
+      // Candidates for theatre include leftover doctors (not assigned to any category) as well as doctors in fixed categories
+      // if there is a spare doctor to cover them. We do not remove doctors from ward teams unless a replacement is available.
+      // Build list of leftover doctors not containing 'Taha'
+      let leftoverDocs = Object.keys(avail).filter(name => !(/TAHA/i.test(name)));
+      // Sort leftover docs by theatre count then name to rotate theatre duties fairly
+      leftoverDocs.sort((a, b) => {
+        const aCnt = theatreCount[a] || 0;
+        const bCnt = theatreCount[b] || 0;
+        if (aCnt !== bCnt) return aCnt - bCnt;
+        return a.localeCompare(b);
+      });
+      // Build list of fixed-assignment doctors currently on the wards (predetermined) with their categories
+      const predList = [];
+      categoriesList.forEach(cat => {
+        const val = dayAssign[cat];
+        if (!val) return;
+        if (Array.isArray(val)) {
+          val.forEach(name => {
+            if (predetermined.hasOwnProperty(name)) {
+              predList.push({ name: name, cat: cat });
+            }
+          });
+        } else {
+          const name = val;
+          if (predetermined.hasOwnProperty(name)) {
+            predList.push({ name: name, cat: cat });
+          }
+        }
+      });
+      // Sort predList by theatre count then name
+      predList.sort((a, b) => {
+        const aCnt = theatreCount[a.name] || 0;
+        const bCnt = theatreCount[b.name] || 0;
+        if (aCnt !== bCnt) return aCnt - bCnt;
+        return a.name.localeCompare(b.name);
+      });
+      const theatreList = [];
+      // Copy leftoverDocs to use for replacements and theatre assignments
+      let replacementDocs = leftoverDocs.slice();
+      // Try to assign predetermined doctors to theatre while ensuring replacement exists and fairness
+      for (const pd of predList) {
+        if (replacementDocs.length === 0) break;
+        const pdCount = theatreCount[pd.name] || 0;
+        const repName = replacementDocs[0];
+        const repCount = theatreCount[repName] || 0;
+        // Only send predetermined doc to theatre if their theatre count is <= lowest replacement's count
+        if (pdCount <= repCount) {
+          // Remove replacement doctor from list
+          replacementDocs.shift();
+          // Replace pd.name in their category with replacement
+          const currentVal = dayAssign[pd.cat];
+          if (Array.isArray(currentVal)) {
+            // Remove pd.name from array
+            const idx = currentVal.indexOf(pd.name);
+            if (idx > -1) currentVal.splice(idx, 1);
+            // Add replacement
+            currentVal.push(repName);
+            // Keep as array (even length 1)
+            dayAssign[pd.cat] = currentVal;
+          } else {
+            dayAssign[pd.cat] = repName;
+          }
+          // Add predetermined doc to theatre list
+          theatreList.push(pd.name);
+        }
+      }
+      // Any remaining replacementDocs are leftover doctors that will go to theatre
+      replacementDocs.forEach(name => {
+        theatreList.push(name);
+      });
+      // Update theatre counts for doctors actually going to theatre
+      theatreList.forEach(name => {
+        theatreCount[name] = (theatreCount[name] || 0) + 1;
+      });
+      // Assign final theatre list to dayAssign
+      dayAssign['Theatres'] = theatreList;
+      assignments[day] = dayAssign;
+      shiftInfo[day] = dayShiftInfo;
+      // record previous assignments for continuity; treat theatres separately by storing 'Theatres'
+      prevAssignment = {};
+      Object.entries(dayAssign).forEach(([cat, doc]) => {
+        if (!doc) return;
+        if (cat === 'Theatres') {
+          doc.forEach(name => { prevAssignment[name] = 'Theatres'; });
+        } else {
+          if (Array.isArray(doc)) {
+            doc.forEach(name => { prevAssignment[name] = cat; });
+          } else {
+            prevAssignment[doc] = cat;
+          }
+        }
+      });
+    });
+    return { assignments: assignments, shiftInfo: shiftInfo };
+  }
+
+  // Allocate clerking duties
+  function allocateClerks(assignments, shiftInfo, numAdmissions, clerkLimit = 3, prohibited = []) {
+    // Allocate clerks based on number of admissions.  Each doctor can see 2–3 patients.
+    // We avoid assigning more doctors than necessary: the number of clerks (requiredDocs)
+    // is the minimum needed so that no doctor sees more than 3 patients and no less
+    // than 2 on average (unless only one admission exists).  Certain doctors in the
+    // `prohibited` list will never be asked to clerk.
+    const prohibitedSet = new Set(prohibited.map(name => name.toUpperCase()));
+    const clerkCount = {};
+    const result = {};
+    Object.keys(assignments).forEach(day => {
+      const admissions = numAdmissions[day] || 0;
+      // Compute the minimum number of doctors required: one doctor can see up to 3 patients.
+      let requiredDocs = Math.ceil(admissions / 3);
+      // Enforce that each doctor should see at least 2 patients if there are enough admissions
+      // (i.e. reduce the number of doctors if the average drops below 2).
+      const maxDocsByMinPatients = Math.floor(admissions / 2);
+      if (maxDocsByMinPatients > 0 && requiredDocs > maxDocsByMinPatients) {
+        requiredDocs = maxDocsByMinPatients;
+      }
+      // Ensure at least one doctor if there is at least one admission
+      if (admissions > 0 && requiredDocs === 0) {
+        requiredDocs = 1;
+      }
+      const dayAssign = assignments[day];
+      const candidates = [];
+      Object.entries(dayAssign).forEach(([cat, doctor]) => {
+        if (!doctor) return;
+        // Skip theatre category entirely
+        if (cat === 'Theatres') return;
+        // If this entry is an array (extra or multiple assignments), iterate through each doctor
+        if (Array.isArray(doctor)) {
+          doctor.forEach(name => {
+            const info = shiftInfo[day][name];
+            if (!info) return;
+            // Exclude on-call and night staff from clerking pool
+            if (info.on_call || info.night) return;
+            if (prohibitedSet.has(name.toUpperCase())) return;
+            candidates.push({ name: name, start: info.start_time });
+          });
+        } else {
+          const info = shiftInfo[day][doctor];
+          if (!info) return;
+          if (info.on_call || info.night) return;
+          if (prohibitedSet.has(doctor.toUpperCase())) return;
+          candidates.push({ name: doctor, start: info.start_time });
+        }
+      });
+      // Sort candidates by start time (earlier start first, null treated as 9) then by total clerks assigned so far
+      candidates.sort((a, b) => {
+        const aStart = a.start != null ? a.start : 9;
+        const bStart = b.start != null ? b.start : 9;
+        if (aStart !== bStart) return aStart - bStart;
+        const aCount = clerkCount[a.name] || 0;
+        const bCount = clerkCount[b.name] || 0;
+        return aCount - bCount;
+      });
+      const selected = [];
+      for (const cand of candidates) {
+        if (requiredDocs === 0 || selected.length >= requiredDocs) break;
+        const count = clerkCount[cand.name] || 0;
+        if (count < clerkLimit) {
+          selected.push(cand.name);
+          clerkCount[cand.name] = count + 1;
+        }
+      }
+      // Flag if we could not assign enough clerks for the admissions required
+      const flag = (admissions > 0 && selected.length < requiredDocs);
+      result[day] = { clerks: selected, flag: flag };
+    });
+    return result;
+  }
+
+  // Build daily message text
+  function buildDailyMessage(dateStr, assignments, clerks, onCalls, nights, theatres) {
+    const bleepMap = {
+      'Pit/Epi': ['Pituitary + Epilepsy', '8260'],
+      'Functional': ['Functional', '2140'],
+      'PG/WM': ['PG/WM', '8342'],
+      'AT/LW': ['Hydrocephalus (AT/LW)', '1900'],
+      'PC/MM': ['PC/MM', '1365'],
+      'Team C1': ['Team C', '8345'],
+      'Team C2': ['Team C', '8341'],
+      'Team D': ['Team D', '2138']
+    };
+    const lines = [];
+    lines.push('SHO Team allocations for');
+    lines.push('');
+    lines.push(dateStr);
+    lines.push('');
+    // Order for listing
+    ['Pit/Epi','Functional','AT/LW','PC/MM','PG/WM'].forEach(key => {
+      const [label, bleep] = bleepMap[key];
+      let doc = assignments[key];
+      let docStr = '';
+      if (Array.isArray(doc)) {
+        docStr = doc.join(', ');
+      } else {
+        docStr = doc || '';
+      }
+      lines.push(`${label} ${bleep}: ${docStr}`);
+    });
+    // Team C
+    const c1 = assignments['Team C1'];
+    const c2 = assignments['Team C2'];
+    lines.push('Team C 8345 8341:');
+    // If either is array, iterate through each to list names
+    if (Array.isArray(c1)) {
+      c1.forEach(name => { lines.push(name); });
+    } else if (c1) {
+      lines.push(c1);
+    }
+    if (Array.isArray(c2)) {
+      c2.forEach(name => { lines.push(name); });
+    } else if (c2) {
+      lines.push(c2);
+    }
+    // Team D
+    const td = assignments['Team D'];
+    lines.push('Team D 2138 and 2139:');
+    if (Array.isArray(td)) {
+      td.forEach(name => { lines.push(name); });
+    } else if (td) {
+      lines.push(td);
+    }
+    lines.push('');
+    lines.push('Clerking Shift:');
+    if (clerks && clerks.length > 0) {
+      lines.push(clerks.join(', '));
+    } else {
+      lines.push('None');
+    }
+    lines.push('');
+    if (onCalls && onCalls.length > 0) {
+      lines.push(`On-call bleep 8233: ${onCalls[0]}`);
+      if (onCalls.length > 1) {
+        lines.push(`Second on-call: ${onCalls[1]}`);
+      }
+    }
+    if (nights && nights.length > 0) {
+      lines.push(`Night on-call 8233: ${nights[0]}`);
+    }
+    if (theatres && theatres.length > 0) {
+      lines.push('');
+      lines.push('Theatres:');
+      lines.push(theatres.join(', '));
+    }
+    return lines.join('\n');
+  }
+
+  let rotaData = [];
+  let dayColumns = [];
+  // File input handler
+  document.getElementById('file-input').addEventListener('change', function(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function(evt) {
+      const data = new Uint8Array(evt.target.result);
+      const workbook = XLSX.read(data, { type: 'array' });
+      rotaData = parseRota(workbook);
+      if (rotaData.length === 0) {
+        alert('Failed to parse rota');
+        return;
+      }
+      // Determine day columns (skip Team, Name, Firm, Bleeps)
+      const keys = Object.keys(rotaData[0]);
+      dayColumns = keys.filter(k => !['Team','Name','Firm','Bleeps'].includes(k));
+      // Exclude weekend days (Saturday and Sunday) from dayColumns
+      dayColumns = dayColumns.filter(day => {
+        const d = day.toString().toLowerCase();
+        return !(d.startsWith('sat') || d.startsWith('sun'));
+      });
+      // Create inputs for admissions and extra team doctors
+      const form = document.getElementById('admissions-form');
+      form.innerHTML = '';
+      dayColumns.forEach((day, idx) => {
+        const wrapper = document.createElement('div');
+        wrapper.style.marginBottom = '12px';
+        // Day heading
+        const dayHeading = document.createElement('strong');
+        dayHeading.textContent = day;
+        dayHeading.style.display = 'block';
+        wrapper.appendChild(dayHeading);
+        // Admissions input
+        const admLabel = document.createElement('label');
+        admLabel.textContent = 'Admissions: ';
+        const admInput = document.createElement('input');
+        admInput.type = 'number';
+        admInput.min = '0';
+        admInput.value = '0';
+        admInput.name = 'adm_' + idx;
+        admLabel.appendChild(admInput);
+        wrapper.appendChild(admLabel);
+        // Extra Team A input
+        const extraALabel = document.createElement('label');
+        extraALabel.style.marginLeft = '10px';
+        extraALabel.textContent = ' Extra Team A: ';
+        const extraAInput = document.createElement('input');
+        extraAInput.type = 'number';
+        extraAInput.min = '0';
+        extraAInput.value = '0';
+        extraAInput.name = 'extraA_' + idx;
+        extraALabel.appendChild(extraAInput);
+        wrapper.appendChild(extraALabel);
+        // Extra Team B input
+        const extraBLabel = document.createElement('label');
+        extraBLabel.style.marginLeft = '10px';
+        extraBLabel.textContent = ' Extra Team B: ';
+        const extraBInput = document.createElement('input');
+        extraBInput.type = 'number';
+        extraBInput.min = '0';
+        extraBInput.value = '0';
+        extraBInput.name = 'extraB_' + idx;
+        extraBLabel.appendChild(extraBInput);
+        wrapper.appendChild(extraBLabel);
+        // Extra Team C input
+        const extraCLabel = document.createElement('label');
+        extraCLabel.style.marginLeft = '10px';
+        extraCLabel.textContent = ' Extra Team C: ';
+        const extraCInput = document.createElement('input');
+        extraCInput.type = 'number';
+        extraCInput.min = '0';
+        extraCInput.value = '0';
+        extraCInput.name = 'extraC_' + idx;
+        extraCLabel.appendChild(extraCInput);
+        wrapper.appendChild(extraCLabel);
+        // Extra Team D input
+        const extraDLabel = document.createElement('label');
+        extraDLabel.style.marginLeft = '10px';
+        extraDLabel.textContent = ' Extra Team D: ';
+        const extraDInput = document.createElement('input');
+        extraDInput.type = 'number';
+        extraDInput.min = '0';
+        extraDInput.value = '0';
+        extraDInput.name = 'extraD_' + idx;
+        extraDLabel.appendChild(extraDInput);
+        wrapper.appendChild(extraDLabel);
+        form.appendChild(wrapper);
+      });
+      document.getElementById('admissions-section').classList.remove('hidden');
+      // Populate absence checkboxes
+      const absenceDiv = document.getElementById('absence-section');
+      // Remove any existing checkbox list (keep the first two children: h2 and p)
+      while (absenceDiv.children.length > 2) {
+        absenceDiv.removeChild(absenceDiv.lastChild);
+      }
+      // Gather unique names from rotaData
+      const nameSet = new Set();
+      rotaData.forEach(row => {
+        if (row['Name']) nameSet.add(row['Name']);
+      });
+      const names = Array.from(nameSet);
+      names.sort((a, b) => a.localeCompare(b));
+      const container = document.createElement('div');
+      names.forEach(name => {
+        const lbl = document.createElement('label');
+        lbl.style.marginRight = '10px';
+        lbl.style.display = 'inline-block';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.value = name;
+        cb.name = 'abs_' + name;
+        lbl.appendChild(cb);
+        lbl.appendChild(document.createTextNode(' ' + name));
+        container.appendChild(lbl);
+        container.appendChild(document.createElement('br'));
+      });
+      absenceDiv.appendChild(container);
+      absenceDiv.classList.remove('hidden');
+    };
+    reader.readAsArrayBuffer(file);
+  });
+
+  // Generate button handler
+  document.getElementById('generate-btn').addEventListener('click', function() {
+    if (!rotaData || dayColumns.length === 0) {
+      alert('Please upload a rota file first');
+      return;
+    }
+    // Collect admissions and extra team doctors per day
+    const form = document.getElementById('admissions-form');
+    const numAdmissions = {};
+    const extraTeams = {};
+    dayColumns.forEach((day, idx) => {
+      const admInput = form.querySelector(`input[name="adm_${idx}"]`);
+      const aInput = form.querySelector(`input[name="extraA_${idx}"]`);
+      const bInput = form.querySelector(`input[name="extraB_${idx}"]`);
+      const cInput = form.querySelector(`input[name="extraC_${idx}"]`);
+      const dInput = form.querySelector(`input[name="extraD_${idx}"]`);
+      const admVal = admInput ? parseInt(admInput.value) : 0;
+      const aVal = aInput ? parseInt(aInput.value) : 0;
+      const bVal = bInput ? parseInt(bInput.value) : 0;
+      const cVal = cInput ? parseInt(cInput.value) : 0;
+      const dVal = dInput ? parseInt(dInput.value) : 0;
+      numAdmissions[day] = isNaN(admVal) ? 0 : admVal;
+      extraTeams[day] = {
+        A: isNaN(aVal) ? 0 : aVal,
+        B: isNaN(bVal) ? 0 : bVal,
+        C: isNaN(cVal) ? 0 : cVal,
+        D: isNaN(dVal) ? 0 : dVal
+      };
+    });
+    // Collect absences
+    const absCheckboxes = document.querySelectorAll('#absence-section input[type="checkbox"]:checked');
+    const absences = Array.from(absCheckboxes).map(cb => cb.value);
+    // Predetermined mapping
+    // Fixed assignments for continuity and prioritisation. Hamza Salhab is
+    // prioritised to AT/LW where possible (Team B)
+    const predetermined = {
+      'George Hudson': 'Pit/Epi',
+      'Sanchita Bhatia': 'PG/WM',
+      'Suraj Sennik': 'PC/MM',
+      'Feras Fayez': 'Team D',
+      'Danyal Ahmed FY1': 'Team C1',
+      'Hamza Salhab': 'AT/LW'
+    };
+    // Compute assignments with extra team docs and absences
+    const { assignments, shiftInfo } = assignWeek(rotaData, dayColumns, predetermined, extraTeams, absences);
+    // Compute available doctor counts per day (exclude absent and only count those marked available)
+    const absSet = new Set(absences.map(n => n.toUpperCase()));
+    const availCounts = {};
+    dayColumns.forEach(day => {
+      let count = 0;
+      const dayInfo = shiftInfo[day];
+      Object.entries(dayInfo).forEach(([name, info]) => {
+        if (info.available && !absSet.has(name.toUpperCase())) {
+          count++;
+        }
+      });
+      availCounts[day] = count;
+    });
+
+    // Compute night shift doctors for each day
+    const nightAssignments = {};
+    dayColumns.forEach(day => {
+      nightAssignments[day] = [];
+      const dayInfo = shiftInfo[day];
+      Object.entries(dayInfo).forEach(([name, info]) => {
+        if (info.night) {
+          // Only include if not absent
+          if (!absSet.has(name.toUpperCase())) {
+            nightAssignments[day].push(name);
+          }
+        }
+      });
+    });
+    // Allocate clerks
+    // Exclude both Danyal Khan and Danyal Ahmed FY1 from clerking
+    const clerks = allocateClerks(assignments, shiftInfo, numAdmissions, 3, ['Danyal Khan', 'Danyal Ahmed FY1']);
+    // Build messages
+    const messagesDiv = document.getElementById('messages');
+    messagesDiv.innerHTML = '';
+    dayColumns.forEach(day => {
+      const dayShift = shiftInfo[day];
+      // Determine on call and night lists
+      const onCalls = [];
+      const nights = [];
+      Object.entries(dayShift).forEach(([name, info]) => {
+        if (info.on_call) onCalls.push(name);
+        if (info.night) nights.push(name);
+      });
+      const theatres = assignments[day]['Theatres'] || [];
+      const msg = buildDailyMessage(day, assignments[day], clerks[day].clerks, onCalls, nights, theatres);
+      const header = document.createElement('h3');
+      header.textContent = day;
+      const pre = document.createElement('pre');
+      pre.textContent = msg;
+      messagesDiv.appendChild(header);
+      messagesDiv.appendChild(pre);
+    });
+    // Build assignments table
+    const assignmentsTableDiv = document.getElementById('assignments-table');
+    assignmentsTableDiv.innerHTML = '';
+    const table = document.createElement('table');
+    const thead = document.createElement('thead');
+    const headerRow = document.createElement('tr');
+    const th0 = document.createElement('th');
+    th0.textContent = 'Category';
+    headerRow.appendChild(th0);
+    dayColumns.forEach(day => {
+      const th = document.createElement('th');
+      // Append available doctor count in parentheses
+      th.textContent = `${day} (${availCounts[day]})`;
+      headerRow.appendChild(th);
+    });
+    thead.appendChild(headerRow);
+    table.appendChild(thead);
+    const categoriesList = ['Pit/Epi','Functional','PG/WM','AT/LW','PC/MM','Team C1','Team C2','Team D','Theatres','Night'];
+    const tbody = document.createElement('tbody');
+    categoriesList.forEach(cat => {
+      const tr = document.createElement('tr');
+      const tdCat = document.createElement('td');
+      tdCat.textContent = cat;
+      tr.appendChild(tdCat);
+      dayColumns.forEach(day => {
+        const td = document.createElement('td');
+        if (cat === 'Night') {
+          const list = nightAssignments[day] || [];
+          td.textContent = list.length ? list.join(', ') : '';
+        } else {
+          const val = assignments[day][cat];
+          if (Array.isArray(val)) {
+            td.textContent = val.length > 0 ? val.join(', ') : '';
+          } else {
+            td.textContent = val || '';
+          }
+        }
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    assignmentsTableDiv.appendChild(table);
+    // Build clerking table
+    const clerkingDiv = document.getElementById('clerking-table');
+    clerkingDiv.innerHTML = '';
+    const clerkTable = document.createElement('table');
+    const cHead = document.createElement('thead');
+    const cRow = document.createElement('tr');
+    ['Day','Clerking Doctors','Notes'].forEach(text => {
+      const th = document.createElement('th');
+      th.textContent = text;
+      cRow.appendChild(th);
+    });
+    cHead.appendChild(cRow);
+    clerkTable.appendChild(cHead);
+    const cBody = document.createElement('tbody');
+    dayColumns.forEach(day => {
+      const tr = document.createElement('tr');
+      const tdDay = document.createElement('td');
+      tdDay.textContent = `${day} (${availCounts[day]})`;
+      tr.appendChild(tdDay);
+      const tdDocs = document.createElement('td');
+      const docs = clerks[day].clerks;
+      tdDocs.textContent = docs && docs.length ? docs.join(', ') : 'None';
+      tr.appendChild(tdDocs);
+      const tdNote = document.createElement('td');
+      tdNote.innerHTML = clerks[day].flag ? '<span class="warning">Insufficient clerks available</span>' : '';
+      tr.appendChild(tdNote);
+      cBody.appendChild(tr);
+    });
+    clerkTable.appendChild(cBody);
+    clerkingDiv.appendChild(clerkTable);
+    // Reveal results section
+    document.getElementById('results-section').classList.remove('hidden');
+
+    // Build individual schedules per doctor
+    const individualContainer = document.getElementById('individual-schedules');
+    if (individualContainer) {
+      individualContainer.remove();
+    }
+    const indivDiv = document.createElement('div');
+    indivDiv.id = 'individual-schedules';
+    const indivHeader = document.createElement('h2');
+    indivHeader.textContent = 'Individual Schedules';
+    indivDiv.appendChild(indivHeader);
+    // Compute schedule mapping: doctor -> day -> category
+    const schedule = {};
+    // Collect all doctor names from rotaData (excluding absences)
+    rotaData.forEach(row => {
+      const name = row['Name'];
+      if (!schedule[name]) schedule[name] = {};
+    });
+    // Fill schedule for each day
+    dayColumns.forEach(day => {
+      const dayAssign = assignments[day];
+      // For each category, assign doctor(s)
+      Object.entries(dayAssign).forEach(([cat, docVal]) => {
+        // unify Team C1 and Team C2 to 'Team C' for display
+        let dispCat = cat;
+        if (cat === 'Team C1' || cat === 'Team C2') dispCat = 'Team C';
+        if (cat === 'Theatres') dispCat = 'Theatres';
+        if (!docVal) return;
+        if (Array.isArray(docVal)) {
+          docVal.forEach(name => {
+            if (!schedule[name]) schedule[name] = {};
+            schedule[name][day] = dispCat;
+          });
+        } else {
+          const name = docVal;
+          if (!schedule[name]) schedule[name] = {};
+          schedule[name][day] = dispCat;
+        }
+      });
+      // Doctors not assigned remain undefined for that day
+    });
+    // Mark night shifts in the schedule
+    dayColumns.forEach(day => {
+      const list = nightAssignments[day] || [];
+      list.forEach(name => {
+        if (!schedule[name]) schedule[name] = {};
+        schedule[name][day] = 'Night';
+      });
+    });
+    // Build table for individual schedules
+    const indivTable = document.createElement('table');
+    const iHead = document.createElement('thead');
+    const iRow = document.createElement('tr');
+    const thName = document.createElement('th');
+    thName.textContent = 'Doctor';
+    iRow.appendChild(thName);
+    dayColumns.forEach(day => {
+      const th = document.createElement('th');
+      th.textContent = `${day} (${availCounts[day]})`;
+      iRow.appendChild(th);
+    });
+    iHead.appendChild(iRow);
+    indivTable.appendChild(iHead);
+    const iBody = document.createElement('tbody');
+    Object.keys(schedule)
+      .sort((a,b) => a.localeCompare(b))
+      .forEach(name => {
+        // Skip Locum Cover or PP entries if they have no assignments for any day
+        const lowerName = name.toLowerCase();
+        if ((lowerName.includes('locum cover') || lowerName === 'pp' || lowerName.includes('pp')) ) {
+          let hasAssign = false;
+          for (const day of dayColumns) {
+            if (schedule[name] && schedule[name][day]) {
+              hasAssign = true;
+              break;
+            }
+          }
+          if (!hasAssign) {
+            return; // skip adding row for this person
+          }
+        }
+        const tr = document.createElement('tr');
+        const tdName = document.createElement('td');
+        tdName.textContent = name;
+        tr.appendChild(tdName);
+        dayColumns.forEach(day => {
+          const td = document.createElement('td');
+          const cat = schedule[name][day] || '';
+          td.textContent = cat;
+          tr.appendChild(td);
+        });
+        iBody.appendChild(tr);
+      });
+    indivTable.appendChild(iBody);
+    indivDiv.appendChild(indivTable);
+    document.getElementById('results-section').appendChild(indivDiv);
+  });
+  </script>
+</body>
+</html>
