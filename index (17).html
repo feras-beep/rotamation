@@ -1,0 +1,1776 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <title>Neurosurgical SHO Rota Generator</title>
+  <!-- Load the SheetJS library from a CDN.  This is required to parse Excel files. -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <!-- Load xlsx-js-style for Excel styling support -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
+  <style>
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      margin: 20px;
+      background-color: #f0f4f8;
+      color: #34495e;
+      line-height: 1.6;
+    }
+    h1 {
+      color: #2c3e50;
+      margin-bottom: 10px;
+      font-size: 32px;
+    }
+    p {
+      margin-top: 0;
+      margin-bottom: 10px;
+    }
+    .section {
+      background: #ffffff;
+      border: 1px solid #e0e6ed;
+      border-radius: 8px;
+      padding: 20px;
+      margin-top: 20px;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+    }
+    label {
+      display: inline-block;
+      margin-right: 10px;
+      margin-bottom: 10px;
+      font-weight: 600;
+    }
+    input[type="file"], input[type="number"] {
+      margin-top: 5px;
+      padding: 6px 8px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+    }
+    input[type="number"] {
+      width: 80px;
+    }
+    button {
+      background-color: #3498db;
+      color: #ffffff;
+      border: none;
+      padding: 10px 18px;
+      border-radius: 4px;
+      font-size: 16px;
+      cursor: pointer;
+      transition: background-color 0.2s ease;
+      margin-top: 10px;
+    }
+    button:hover:not(:disabled) {
+      background-color: #2980b9;
+    }
+    button:disabled {
+      background-color: #95a5a6;
+      cursor: not-allowed;
+    }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      margin-top: 12px;
+    }
+    th, td {
+      border: 1px solid #e0e6ed;
+      padding: 10px;
+      text-align: left;
+    }
+    th {
+      background-color: #ecf2f8;
+      font-weight: 600;
+    }
+    tr:nth-child(even) {
+      background-color: #f7fafd;
+    }
+    pre {
+      background-color: #f7f9fb;
+      padding: 12px;
+      border: 1px solid #e1e4e8;
+      border-radius: 4px;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+    .hidden {
+      display: none;
+    }
+    .warning {
+      color: #c0392b;
+      font-style: italic;
+    }
+    h2 {
+      color: #2c3e50;
+      border-bottom: 1px solid #ecf0f1;
+      padding-bottom: 5px;
+      margin-top: 20px;
+      margin-bottom: 10px;
+    }
+    h3 {
+      margin-top: 15px;
+      color: #34495e;
+    }
+  </style>
+</head>
+<body>
+  <h1>Neurosurgical SHO Rota Generator</h1>
+  <p>Select your weekly rota Excel file and enter the number of admissions for each day to generate team allocations, clerking duties and daily messages.</p>
+  <p style="font-size: 12px; color: #7f8c8d;">Version: 2025-10-02 02:02 - Force grey empty cells</p>
+  <div class="section">
+    <label for="file-input">Upload rota (.xlsx): </label>
+    <input type="file" id="file-input" accept=".xlsx,.xls">
+  </div>
+  <div id="work-container" style="display:flex; gap:20px; flex-wrap:wrap;">
+    <div id="admissions-section" class="section hidden" style="flex:1;">
+    <h2>Daily Workload</h2>
+    <p>Specify the number of admissions requiring clerking and any additional doctors required on the wards for each day.</p>
+    <form id="admissions-form">
+      <!-- Inputs will be populated dynamically after loading the file -->
+    </form>
+    <button id="generate-btn" type="button">Generate Rota</button>
+    </div>
+    <div id="absence-section" class="section hidden" style="flex:1;">
+      <h2>Absences / Illness</h2>
+      <p>Select any doctors who are absent or ill. You can mark absences per day.</p>
+      <!-- Checkboxes populated dynamically -->
+    </div>
+  </div>
+  <div id="results-section" class="section hidden">
+    <h2>Weekly Team Allocation</h2>
+    <div id="assignments-table"></div>
+    <h2>Clerking Assignments</h2>
+    <div id="clerking-table"></div>
+    <h2>Daily Messages</h2>
+    <div id="messages"></div>
+    <!-- Print and Export buttons will appear after rota generation -->
+    <div id="print-buttons" class="hidden" style="margin-top: 20px;">
+      <button id="print-weekly-btn" type="button">Print Weekly Rota</button>
+      <button id="print-indiv-btn" type="button" style="margin-left: 10px;">Print Individual Schedules</button>
+      <button id="export-excel-btn" type="button" style="margin-left: 10px; background-color: #27ae60;">Export to Excel</button>
+    </div>
+  </div>
+
+
+  <script>
+  // Utility to parse a single shift cell into structured data
+  function parseShift(str) {
+    if (!str || typeof str !== 'string' || str.trim() === '' || str.trim() === '\u200b') {
+      return { available: false, start_time: null, assignment: null, on_call: false, night: false };
+    }
+    const s = str.trim().toUpperCase();
+    // Leave keywords
+    if (/^(AL|ZERO|INDUCTION|WEISS)\b/.test(s)) {
+      return { available: false, start_time: null, assignment: null, on_call: false, night: false };
+    }
+    // Night
+    if (s.includes('NIGHT')) {
+      return { available: false, start_time: null, assignment: null, on_call: false, night: true };
+    }
+    // On-call: treat as available for team assignment but mark on_call flag
+    if (s.includes('LD BLEEP') || s.includes('LD SECOND')) {
+      return { available: true, start_time: null, assignment: null, on_call: true, night: false };
+    }
+    let start_time = null;
+    if (s.includes('0700') || s.includes('07:00')) start_time = 7;
+    else if (s.includes('0800') || s.includes('08:00')) start_time = 8;
+    let assignment = null;
+    if (s.includes('PIT') || s.includes('EPI')) assignment = 'Pit/Epi';
+    if (s.includes('FUNCTION')) assignment = 'Functional';
+    if (s.includes('PG/WM')) assignment = 'PG/WM';
+    if (s.includes('AT/LW')) assignment = 'AT/LW';
+    if (s.includes('PC') && s.includes('MM')) assignment = 'PC/MM';
+    if (s.includes('TEAM C')) assignment = 'Team C';
+    if (s.includes('TEAM D')) assignment = 'Team D';
+    if (s.includes('TEAM A')) assignment = 'Team A';
+    if (s.includes('TEAM B')) assignment = 'Team B';
+    if (s.includes('THEATRE')) assignment = 'Theatre';
+    return { available: true, start_time: start_time, assignment: assignment, on_call: false, night: false };
+  }
+
+  // Parse the uploaded workbook into an array of doctor objects
+  function parseRota(workbook) {
+    const sheet = workbook.Sheets['SHO Rota'] || workbook.Sheets[workbook.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+    if (rows.length < 4) {
+      alert('Unexpected rota format');
+      return [];
+    }
+    const header = rows[1].slice();
+    // Replace missing header cell at index 1 with 'Name'
+    if (!header[1]) header[1] = 'Name';
+    // Build array of objects from row 3 onwards
+    const data = [];
+    let currentTeam = null;
+    for (let i = 3; i < rows.length; i++) {
+      const row = rows[i];
+      if (row.length === 0) continue;
+      const obj = {};
+      for (let j = 0; j < header.length; j++) {
+        const key = header[j];
+        obj[key] = row[j];
+      }
+      // Forward fill Team
+      if (obj['Team']) {
+        currentTeam = obj['Team'];
+      } else {
+        obj['Team'] = currentTeam;
+      }
+      data.push(obj);
+    }
+    return data;
+  }
+
+  // Assign doctors to team categories across the week
+  function assignWeek(data, days, predetermined, extraTeams = {}, absences = []) {
+    /*
+      Assign doctors to team categories across the week.
+      - predetermined: a mapping of doctor name -> category (fixed assignments)
+      - extraTeams: an object mapping day -> integer number of additional doctors to allocate to teams beyond the core categories.
+      - absences: an array of doctor names who should be considered unavailable for all days.
+    */
+    // Map each doctor to their home team for preference-based allocation
+    const homeTeam = {};
+    data.forEach(row => { homeTeam[row['Name']] = row['Team']; });
+    let prevAssignment = {};
+    const assignments = {};
+    const shiftInfo = {};
+    // Core categories to fill; Theatres will be handled separately
+    const categoriesList = ['Pit/Epi','Functional','PG/WM','AT/LW','PC/MM','Team C1','Team C2','Team D'];
+    // Track how many times each doctor has been assigned to theatre to avoid
+    // sending the same person more than once when others are available.
+    const theatreCount = {};
+      days.forEach((day, dayIndex) => {
+      const dayAssign = {};
+      categoriesList.forEach(cat => dayAssign[cat] = null);
+      const avail = {};
+      const dayShiftInfo = {};
+      // Determine absences for this day: absences can be an object mapping day->list or a simple array for all days
+      let absenceSetForDay;
+      if (Array.isArray(absences)) {
+        absenceSetForDay = new Set(absences.map(name => name.toUpperCase()));
+      } else {
+        const list = (absences && absences[day]) || [];
+        absenceSetForDay = new Set(list.map(name => name.toUpperCase()));
+      }
+      // Track predetermined doctors assigned to their fixed categories for this day
+      const predeterminedAssigned = [];
+      // Build availability: mark those not absent and available as per shift
+      data.forEach(row => {
+        const name = row['Name'];
+        const info = parseShift(row[day]);
+        dayShiftInfo[name] = info;
+        // Skip if absent for this day
+        if (absenceSetForDay.has(name.toUpperCase())) return;
+        // treat on-call (non-night) as available; nights remain unavailable
+        if (info.available) avail[name] = info;
+      });
+      // predetermined assignments
+      Object.entries(predetermined).forEach(([doctor, cat]) => {
+        if (avail.hasOwnProperty(doctor) && dayAssign.hasOwnProperty(cat) && dayAssign[cat] === null) {
+          dayAssign[cat] = doctor;
+          // record predetermined assignment for potential theatre consideration
+          predeterminedAssigned.push(doctor);
+          delete avail[doctor];
+        }
+      });
+      // continuity: keep doctors in their previous assignments when possible (except Theatres)
+      Object.keys(avail).forEach(doctor => {
+        const prevCat = prevAssignment[doctor];
+        if (prevCat && prevCat !== 'Theatres' && dayAssign.hasOwnProperty(prevCat) && dayAssign[prevCat] === null) {
+          dayAssign[prevCat] = doctor;
+          delete avail[doctor];
+        }
+      });
+      // fill by home team preference for remaining categories
+      const categoryToTeam = {
+        'Pit/Epi': 'Team A',
+        'Functional': 'Team A',
+        'PG/WM': 'Team B',
+        'AT/LW': 'Team B',
+        'PC/MM': 'Team B',
+        'Team C1': 'Team C',
+        'Team C2': 'Team C',
+        'Team D': 'TEAM D'
+      };
+      Object.keys(dayAssign).forEach(cat => {
+        if (dayAssign[cat] === null) {
+          const requiredTeam = categoryToTeam[cat];
+          let candidate = null;
+          for (const doc in avail) {
+            if (homeTeam[doc] === requiredTeam) {
+              candidate = doc;
+              break;
+            }
+          }
+          if (candidate) {
+            dayAssign[cat] = candidate;
+            delete avail[candidate];
+          }
+        }
+      });
+      // fill any remaining empty categories with available doctors
+      Object.keys(dayAssign).forEach(cat => {
+        if (dayAssign[cat] === null) {
+          const keys = Object.keys(avail);
+          if (keys.length > 0) {
+            const doc = keys[0];
+            dayAssign[cat] = doc;
+            delete avail[doc];
+          }
+        }
+      });
+      // Assign extra doctors to specific teams if requested for this day
+      const extraForDay = extraTeams[day] || {};
+      // If extraForDay is a number (fallback from older usage), convert to Team A extras
+      if (typeof extraForDay === 'number') {
+        extraForDay.A = extraForDay;
+      }
+      const teamToCategories = {
+        A: ['Pit/Epi','Functional'],
+        B: ['PG/WM','AT/LW','PC/MM'],
+        C: ['Team C1','Team C2'],
+        D: ['Team D']
+      };
+      // Build a sorted list of available doctors for consistent allocation
+      let extraAvail = Object.keys(avail).sort((a,b) => a.localeCompare(b));
+      // We'll maintain a pointer per team to round-robin over its categories
+      const teamIndices = { A: 0, B: 0, C: 0, D: 0 };
+      ['A','B','C','D'].forEach(team => {
+        const extraNum = extraForDay[team] || 0;
+        const cats = teamToCategories[team];
+        for (let i = 0; i < extraNum; i++) {
+          if (extraAvail.length === 0) break;
+          const doc = extraAvail.shift();
+          const cat = cats[teamIndices[team] % cats.length];
+          const current = dayAssign[cat];
+          if (Array.isArray(current)) {
+            current.push(doc);
+          } else if (current !== null && current !== undefined) {
+            dayAssign[cat] = [current, doc];
+          } else {
+            dayAssign[cat] = [doc];
+          }
+          teamIndices[team]++;
+        }
+      });
+      // After assigning extras, the removed docs will be cleaned up when we remove all docs assigned to categories below.
+      // Remove all doctors that were assigned to categories from avail
+      Object.values(dayAssign).forEach(val => {
+        if (!val) return;
+        if (Array.isArray(val)) {
+          val.forEach(name => { delete avail[name]; });
+        } else {
+          delete avail[val];
+        }
+      });
+      // After filling categories and assigning extras, assign doctors to theatre while ensuring fairness and coverage.
+      // Candidates for theatre include leftover doctors (not assigned to any category) as well as doctors in fixed categories
+      // if there is a spare doctor to cover them. We do not remove doctors from ward teams unless a replacement is available.
+      // Build list of leftover doctors not containing 'Taha'
+      let leftoverDocs = Object.keys(avail).filter(name => !(/TAHA/i.test(name)));
+      // Sort leftover docs by theatre count then name to rotate theatre duties fairly
+      leftoverDocs.sort((a, b) => {
+        const aCnt = theatreCount[a] || 0;
+        const bCnt = theatreCount[b] || 0;
+        if (aCnt !== bCnt) return aCnt - bCnt;
+        return a.localeCompare(b);
+      });
+      // Build list of fixed-assignment doctors currently on the wards (predetermined) with their categories
+      const predList = [];
+      categoriesList.forEach(cat => {
+        const val = dayAssign[cat];
+        if (!val) return;
+        if (Array.isArray(val)) {
+          val.forEach(name => {
+            if (predetermined.hasOwnProperty(name)) {
+              predList.push({ name: name, cat: cat });
+            }
+          });
+        } else {
+          const name = val;
+          if (predetermined.hasOwnProperty(name)) {
+            predList.push({ name: name, cat: cat });
+          }
+        }
+      });
+      // Sort predList by theatre count then name
+      predList.sort((a, b) => {
+        const aCnt = theatreCount[a.name] || 0;
+        const bCnt = theatreCount[b.name] || 0;
+        if (aCnt !== bCnt) return aCnt - bCnt;
+        return a.name.localeCompare(b.name);
+      });
+      const theatreList = [];
+      // Copy leftoverDocs to use for replacements and theatre assignments
+      let replacementDocs = leftoverDocs.slice();
+      // Try to assign predetermined doctors to theatre while ensuring replacement exists and fairness
+      for (const pd of predList) {
+        if (replacementDocs.length === 0) break;
+        const pdCount = theatreCount[pd.name] || 0;
+        const repName = replacementDocs[0];
+        const repCount = theatreCount[repName] || 0;
+        // Only send predetermined doc to theatre if their theatre count is <= lowest replacement's count
+        if (pdCount <= repCount) {
+          // Remove replacement doctor from list
+          replacementDocs.shift();
+          // Replace pd.name in their category with replacement
+          const currentVal = dayAssign[pd.cat];
+          if (Array.isArray(currentVal)) {
+            // Remove pd.name from array
+            const idx = currentVal.indexOf(pd.name);
+            if (idx > -1) currentVal.splice(idx, 1);
+            // Add replacement
+            currentVal.push(repName);
+            // Keep as array (even length 1)
+            dayAssign[pd.cat] = currentVal;
+          } else {
+            dayAssign[pd.cat] = repName;
+          }
+          // Add predetermined doc to theatre list
+          theatreList.push(pd.name);
+        }
+      }
+      // Any remaining replacementDocs are leftover doctors that will go to theatre
+      replacementDocs.forEach(name => {
+        theatreList.push(name);
+      });
+      // Update theatre counts for doctors actually going to theatre
+      theatreList.forEach(name => {
+        theatreCount[name] = (theatreCount[name] || 0) + 1;
+      });
+      // Assign final theatre list to dayAssign
+      dayAssign['Theatres'] = theatreList;
+      assignments[day] = dayAssign;
+      shiftInfo[day] = dayShiftInfo;
+      // record previous assignments for continuity; treat theatres separately by storing 'Theatres'
+      prevAssignment = {};
+      Object.entries(dayAssign).forEach(([cat, doc]) => {
+        if (!doc) return;
+        if (cat === 'Theatres') {
+          doc.forEach(name => { prevAssignment[name] = 'Theatres'; });
+        } else {
+          if (Array.isArray(doc)) {
+            doc.forEach(name => { prevAssignment[name] = cat; });
+          } else {
+            prevAssignment[doc] = cat;
+          }
+        }
+      });
+    });
+    return { assignments: assignments, shiftInfo: shiftInfo };
+  }
+
+  // Allocate clerking duties
+  function allocateClerks(assignments, shiftInfo, numAdmissions, days, clerkLimit = 3, prohibited = []) {
+    /*
+      Assign clerking duties to doctors with additional constraints:
+      - Each doctor can see up to 3 patients; target average 2–3 per doctor as before.
+      - Aim to give every doctor one clerking shift before assigning a second.
+      - No doctor should clerk on consecutive days.
+      - No doctor should clerk on an on-call day or the day after an on-call day.
+      - Doctors in the prohibited list are never asked to clerk.
+    */
+    const prohibitedSet = new Set(prohibited.map(name => name.toUpperCase()));
+    const clerkCount = {};
+    const lastClerkDay = {};
+    // Precompute on-call days per doctor (by index)
+    const onCallIndices = {};
+    const dayIndexMap = {};
+    days.forEach((d, idx) => { dayIndexMap[d] = idx; });
+    days.forEach((day, idx) => {
+      const info = shiftInfo[day];
+      Object.entries(info).forEach(([name, details]) => {
+        if (details.on_call) {
+          if (!onCallIndices[name]) onCallIndices[name] = new Set();
+          onCallIndices[name].add(idx);
+        }
+      });
+    });
+    const result = {};
+    days.forEach((day, dayIndex) => {
+      const admissions = numAdmissions[day] || 0;
+      // Compute minimum number of doctors required: one doctor can see up to 3 patients.
+      let requiredDocs = Math.ceil(admissions / 3);
+      const maxDocsByMinPatients = Math.floor(admissions / 2);
+      if (maxDocsByMinPatients > 0 && requiredDocs > maxDocsByMinPatients) {
+        requiredDocs = maxDocsByMinPatients;
+      }
+      if (admissions > 0 && requiredDocs === 0) {
+        requiredDocs = 1;
+      }
+      const dayAssign = assignments[day];
+      const candidates = [];
+      Object.entries(dayAssign).forEach(([cat, doctor]) => {
+        if (!doctor) return;
+        if (cat === 'Theatres') return;
+        if (Array.isArray(doctor)) {
+          doctor.forEach(name => {
+            const info = shiftInfo[day][name];
+            if (!info) return;
+            if (info.on_call || info.night) return;
+            if (prohibitedSet.has(name.toUpperCase())) return;
+            candidates.push({ name: name, start: info.start_time });
+          });
+        } else {
+          const info = shiftInfo[day][doctor];
+          if (!info) return;
+          if (info.on_call || info.night) return;
+          if (prohibitedSet.has(doctor.toUpperCase())) return;
+          candidates.push({ name: doctor, start: info.start_time });
+        }
+      });
+      // Sort candidates by clerkCount (ascending) then start time then name
+      candidates.sort((a, b) => {
+        const aCount = clerkCount[a.name] || 0;
+        const bCount = clerkCount[b.name] || 0;
+        if (aCount !== bCount) return aCount - bCount;
+        const aStart = a.start != null ? a.start : 9;
+        const bStart = b.start != null ? b.start : 9;
+        if (aStart !== bStart) return aStart - bStart;
+        return a.name.localeCompare(b.name);
+      });
+      const selected = [];
+      for (const cand of candidates) {
+        if (selected.length >= requiredDocs) break;
+        const name = cand.name;
+        const count = clerkCount[name] || 0;
+        // Enforce max clerk assignments per doctor
+        if (count >= clerkLimit) continue;
+        // Avoid consecutive clerking days
+        const lastDay = lastClerkDay[name];
+        if (lastDay !== undefined && dayIndex - lastDay === 1) continue;
+        // Avoid clerking on on-call day or day after on-call
+        const onCallSet = onCallIndices[name];
+        if (onCallSet) {
+          if (onCallSet.has(dayIndex) || onCallSet.has(dayIndex - 1)) continue;
+        }
+        // Pick this candidate
+        selected.push(name);
+        clerkCount[name] = count + 1;
+        lastClerkDay[name] = dayIndex;
+      }
+      const flag = (admissions > 0 && selected.length < requiredDocs);
+      result[day] = { clerks: selected, flag: flag };
+    });
+    return result;
+  }
+
+  // Build daily message text
+  function buildDailyMessage(dateStr, assignments, clerks, onCalls, nights, theatres) {
+    const bleepMap = {
+      'Pit/Epi': ['Pituitary + Epilepsy', '8260'],
+      'Functional': ['Functional', '2140'],
+      'PG/WM': ['PG/WM', '8342'],
+      'AT/LW': ['Hydrocephalus (AT/LW)', '1900'],
+      'PC/MM': ['PC/MM', '1365'],
+      'Team C1': ['Team C', '8345'],
+      'Team C2': ['Team C', '8341'],
+      'Team D': ['Team D', '2138']
+    };
+    const lines = [];
+    lines.push('SHO Team allocations for');
+    lines.push('');
+    lines.push(dateStr);
+    lines.push('');
+    // Order for listing
+    ['Pit/Epi','Functional','AT/LW','PC/MM','PG/WM'].forEach(key => {
+      const [label, bleep] = bleepMap[key];
+      let doc = assignments[key];
+      let docStr = '';
+      if (Array.isArray(doc)) {
+        docStr = doc.join(', ');
+      } else {
+        docStr = doc || '';
+      }
+      lines.push(`${label} ${bleep}: ${docStr}`);
+    });
+    // Team C
+    const c1 = assignments['Team C1'];
+    const c2 = assignments['Team C2'];
+    lines.push('Team C 8345 8341:');
+    // If either is array, iterate through each to list names
+    if (Array.isArray(c1)) {
+      c1.forEach(name => { lines.push(name); });
+    } else if (c1) {
+      lines.push(c1);
+    }
+    if (Array.isArray(c2)) {
+      c2.forEach(name => { lines.push(name); });
+    } else if (c2) {
+      lines.push(c2);
+    }
+    // Team D
+    const td = assignments['Team D'];
+    lines.push('Team D 2138 and 2139:');
+    if (Array.isArray(td)) {
+      td.forEach(name => { lines.push(name); });
+    } else if (td) {
+      lines.push(td);
+    }
+    lines.push('');
+    lines.push('Clerking Shift:');
+    if (clerks && clerks.length > 0) {
+      lines.push(clerks.join(', '));
+    } else {
+      lines.push('None');
+    }
+    lines.push('');
+    if (onCalls && onCalls.length > 0) {
+      lines.push(`On-call bleep 8233: ${onCalls[0]}`);
+      if (onCalls.length > 1) {
+        lines.push(`Second on-call: ${onCalls[1]}`);
+      }
+    }
+    if (nights && nights.length > 0) {
+      lines.push(`Night on-call 8233: ${nights[0]}`);
+    }
+    if (theatres && theatres.length > 0) {
+      lines.push('');
+      lines.push('Theatres:');
+      lines.push(theatres.join(', '));
+    }
+    return lines.join('\n');
+  }
+
+  let rotaData = [];
+  let dayColumns = [];
+  let originalWorkbook = null;
+  // File input handler
+  document.getElementById('file-input').addEventListener('change', function(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function(evt) {
+      const data = new Uint8Array(evt.target.result);
+      const workbook = XLSX.read(data, { type: 'array', cellStyles: true });
+      originalWorkbook = workbook;
+      rotaData = parseRota(workbook);
+      if (rotaData.length === 0) {
+        alert('Failed to parse rota');
+        return;
+      }
+      // Determine day columns (skip Team, Name, Firm, Bleeps)
+      const keys = Object.keys(rotaData[0]);
+      dayColumns = keys.filter(k => !['Team','Name','Firm','Bleeps'].includes(k));
+      // Exclude weekend days (Saturday and Sunday) from dayColumns
+      dayColumns = dayColumns.filter(day => {
+        const d = day.toString().toLowerCase();
+        return !(d.startsWith('sat') || d.startsWith('sun'));
+      });
+      // Create inputs for admissions and extra team doctors
+      const form = document.getElementById('admissions-form');
+      form.innerHTML = '';
+      dayColumns.forEach((day, idx) => {
+        const wrapper = document.createElement('div');
+        wrapper.style.marginBottom = '12px';
+        // Day heading
+        const dayHeading = document.createElement('strong');
+        dayHeading.textContent = day;
+        dayHeading.style.display = 'block';
+        wrapper.appendChild(dayHeading);
+        // Admissions input
+        const admLabel = document.createElement('label');
+        admLabel.textContent = 'Admissions: ';
+        const admInput = document.createElement('input');
+        admInput.type = 'number';
+        admInput.min = '0';
+        admInput.value = '0';
+        admInput.name = 'adm_' + idx;
+        admLabel.appendChild(admInput);
+        wrapper.appendChild(admLabel);
+        // Extra Team A input
+        const extraALabel = document.createElement('label');
+        extraALabel.style.marginLeft = '10px';
+        extraALabel.textContent = ' Extra Team A: ';
+        const extraAInput = document.createElement('input');
+        extraAInput.type = 'number';
+        extraAInput.min = '0';
+        extraAInput.value = '0';
+        extraAInput.name = 'extraA_' + idx;
+        extraALabel.appendChild(extraAInput);
+        wrapper.appendChild(extraALabel);
+        // Extra Team B input
+        const extraBLabel = document.createElement('label');
+        extraBLabel.style.marginLeft = '10px';
+        extraBLabel.textContent = ' Extra Team B: ';
+        const extraBInput = document.createElement('input');
+        extraBInput.type = 'number';
+        extraBInput.min = '0';
+        extraBInput.value = '0';
+        extraBInput.name = 'extraB_' + idx;
+        extraBLabel.appendChild(extraBInput);
+        wrapper.appendChild(extraBLabel);
+        // Extra Team C input
+        const extraCLabel = document.createElement('label');
+        extraCLabel.style.marginLeft = '10px';
+        extraCLabel.textContent = ' Extra Team C: ';
+        const extraCInput = document.createElement('input');
+        extraCInput.type = 'number';
+        extraCInput.min = '0';
+        extraCInput.value = '0';
+        extraCInput.name = 'extraC_' + idx;
+        extraCLabel.appendChild(extraCInput);
+        wrapper.appendChild(extraCLabel);
+        // Extra Team D input
+        const extraDLabel = document.createElement('label');
+        extraDLabel.style.marginLeft = '10px';
+        extraDLabel.textContent = ' Extra Team D: ';
+        const extraDInput = document.createElement('input');
+        extraDInput.type = 'number';
+        extraDInput.min = '0';
+        extraDInput.value = '0';
+        extraDInput.name = 'extraD_' + idx;
+        extraDLabel.appendChild(extraDInput);
+        wrapper.appendChild(extraDLabel);
+        form.appendChild(wrapper);
+      });
+      document.getElementById('admissions-section').classList.remove('hidden');
+      // Populate absence checkboxes by day and doctor
+      const absenceDiv = document.getElementById('absence-section');
+      // Remove any existing controls (keep first two children: h2 and p)
+      while (absenceDiv.children.length > 2) {
+        absenceDiv.removeChild(absenceDiv.lastChild);
+      }
+      // Gather unique names from rotaData
+      const nameSet = new Set();
+      rotaData.forEach(row => {
+        if (row['Name']) nameSet.add(row['Name']);
+      });
+      // Build a sorted list of names, excluding any locum or PP entries for the absence table
+      let names = Array.from(nameSet);
+      // Filter out names containing 'locum' or 'pp' (case-insensitive), since locum and PP staff
+      // should not appear in the absence/illness section as per user request.
+      names = names.filter(name => {
+        const lower = (name || '').toLowerCase();
+        // Remove names that include 'locum' or 'pp'
+        return !(lower.includes('locum') || lower.includes('pp'));
+      });
+      names.sort((a, b) => a.localeCompare(b));
+      // Build table for absences
+      const table = document.createElement('table');
+      const thead = document.createElement('thead');
+      const hRow = document.createElement('tr');
+      const thName = document.createElement('th');
+      thName.textContent = 'Doctor';
+      hRow.appendChild(thName);
+      dayColumns.forEach(day => {
+        const th = document.createElement('th');
+        th.textContent = day;
+        hRow.appendChild(th);
+      });
+      thead.appendChild(hRow);
+      table.appendChild(thead);
+      const tbody = document.createElement('tbody');
+      names.forEach(name => {
+        const tr = document.createElement('tr');
+        const tdName = document.createElement('td');
+        tdName.textContent = name;
+        tr.appendChild(tdName);
+        dayColumns.forEach(day => {
+          const td = document.createElement('td');
+          td.style.textAlign = 'center';
+          const cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.dataset.name = name;
+          cb.dataset.day = day;
+          cb.value = name;
+          td.appendChild(cb);
+          tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      absenceDiv.appendChild(table);
+      absenceDiv.classList.remove('hidden');
+    };
+    reader.readAsArrayBuffer(file);
+  });
+
+  // Generate button handler
+  document.getElementById('generate-btn').addEventListener('click', function() {
+    if (!rotaData || dayColumns.length === 0) {
+      alert('Please upload a rota file first');
+      return;
+    }
+    // Collect admissions and extra team doctors per day
+    const form = document.getElementById('admissions-form');
+    const numAdmissions = {};
+    const extraTeams = {};
+    dayColumns.forEach((day, idx) => {
+      const admInput = form.querySelector(`input[name="adm_${idx}"]`);
+      const aInput = form.querySelector(`input[name="extraA_${idx}"]`);
+      const bInput = form.querySelector(`input[name="extraB_${idx}"]`);
+      const cInput = form.querySelector(`input[name="extraC_${idx}"]`);
+      const dInput = form.querySelector(`input[name="extraD_${idx}"]`);
+      const admVal = admInput ? parseInt(admInput.value) : 0;
+      const aVal = aInput ? parseInt(aInput.value) : 0;
+      const bVal = bInput ? parseInt(bInput.value) : 0;
+      const cVal = cInput ? parseInt(cInput.value) : 0;
+      const dVal = dInput ? parseInt(dInput.value) : 0;
+      numAdmissions[day] = isNaN(admVal) ? 0 : admVal;
+      extraTeams[day] = {
+        A: isNaN(aVal) ? 0 : aVal,
+        B: isNaN(bVal) ? 0 : bVal,
+        C: isNaN(cVal) ? 0 : cVal,
+        D: isNaN(dVal) ? 0 : dVal
+      };
+    });
+    // Collect absences per day
+    const absencesByDay = {};
+    const absCheckboxes = document.querySelectorAll('#absence-section input[type="checkbox"]:checked');
+    absCheckboxes.forEach(cb => {
+      const name = cb.dataset.name || cb.value;
+      const day = cb.dataset.day;
+      if (!day) return;
+      if (!absencesByDay[day]) absencesByDay[day] = [];
+      absencesByDay[day].push(name);
+    });
+    // Predetermined mapping
+    // Fixed assignments for continuity and prioritisation. Hamza Salhab is
+    // prioritised to AT/LW where possible (Team B)
+    const predetermined = {
+      'George Hudson': 'Pit/Epi',
+      'Sanchita Bhatia': 'PG/WM',
+      'Suraj Sennik': 'PC/MM',
+      'Feras Fayez': 'Team D',
+      'Danyal Ahmed FY1': 'Team C1',
+      'Hamza Salhab': 'AT/LW'
+    };
+    // Compute assignments with extra team docs and absences
+    const { assignments, shiftInfo } = assignWeek(rotaData, dayColumns, predetermined, extraTeams, absencesByDay);
+    // Compute available doctor counts per day (exclude absent for that day and only count those marked available)
+    const availCounts = {};
+    dayColumns.forEach(day => {
+      let count = 0;
+      const absenceSet = new Set((absencesByDay[day] || []).map(n => n.toUpperCase()));
+      const dayInfo = shiftInfo[day];
+      Object.entries(dayInfo).forEach(([name, info]) => {
+        if (info.available && !absenceSet.has(name.toUpperCase())) {
+          count++;
+        }
+      });
+      availCounts[day] = count;
+    });
+
+    // Compute night shift doctors for each day
+    const nightAssignments = {};
+    dayColumns.forEach(day => {
+      const absenceSet = new Set((absencesByDay[day] || []).map(n => n.toUpperCase()));
+      nightAssignments[day] = [];
+      const dayInfo = shiftInfo[day];
+      Object.entries(dayInfo).forEach(([name, info]) => {
+        if (info.night) {
+          // Only include if not absent for this day
+          if (!absenceSet.has(name.toUpperCase())) {
+            nightAssignments[day].push(name);
+          }
+        }
+      });
+    });
+    // Allocate clerks
+    // Exclude both Danyal Khan and Danyal Ahmed FY1 from clerking
+    // Allocate clerks with day order and prohibited list
+    const clerks = allocateClerks(assignments, shiftInfo, numAdmissions, dayColumns, 3, ['Danyal Khan', 'Danyal Ahmed FY1']);
+    // Build messages
+    const messagesDiv = document.getElementById('messages');
+    messagesDiv.innerHTML = '';
+    dayColumns.forEach(day => {
+      const dayShift = shiftInfo[day];
+      // Determine on call and night lists
+      const onCalls = [];
+      const nights = [];
+      Object.entries(dayShift).forEach(([name, info]) => {
+        if (info.on_call) onCalls.push(name);
+        if (info.night) nights.push(name);
+      });
+      const theatres = assignments[day]['Theatres'] || [];
+      const msg = buildDailyMessage(day, assignments[day], clerks[day].clerks, onCalls, nights, theatres);
+      const header = document.createElement('h3');
+      header.textContent = day;
+      const pre = document.createElement('pre');
+      pre.textContent = msg;
+      messagesDiv.appendChild(header);
+      messagesDiv.appendChild(pre);
+    });
+    // Build assignments table
+    const assignmentsTableDiv = document.getElementById('assignments-table');
+    assignmentsTableDiv.innerHTML = '';
+    const table = document.createElement('table');
+    const thead = document.createElement('thead');
+    const headerRow = document.createElement('tr');
+    const th0 = document.createElement('th');
+    th0.textContent = 'Category';
+    headerRow.appendChild(th0);
+    dayColumns.forEach(day => {
+      const th = document.createElement('th');
+      // Append available doctor count in parentheses
+      th.textContent = `${day} (${availCounts[day]})`;
+      headerRow.appendChild(th);
+    });
+    thead.appendChild(headerRow);
+    table.appendChild(thead);
+    const categoriesList = ['Pit/Epi','Functional','PG/WM','AT/LW','PC/MM','Team C1','Team C2','Team D','Theatres','Night'];
+    const tbody = document.createElement('tbody');
+    categoriesList.forEach(cat => {
+      const tr = document.createElement('tr');
+      const tdCat = document.createElement('td');
+      tdCat.textContent = cat;
+      tr.appendChild(tdCat);
+      dayColumns.forEach(day => {
+        const td = document.createElement('td');
+        if (cat === 'Night') {
+          const list = nightAssignments[day] || [];
+          td.textContent = list.length ? list.join(', ') : '';
+        } else {
+          const val = assignments[day][cat];
+          if (Array.isArray(val)) {
+            td.textContent = val.length > 0 ? val.join(', ') : '';
+          } else {
+            td.textContent = val || '';
+          }
+        }
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    assignmentsTableDiv.appendChild(table);
+    // Build clerking table
+    const clerkingDiv = document.getElementById('clerking-table');
+    clerkingDiv.innerHTML = '';
+    const clerkTable = document.createElement('table');
+    const cHead = document.createElement('thead');
+    const cRow = document.createElement('tr');
+    ['Day','Clerking Doctors','Notes'].forEach(text => {
+      const th = document.createElement('th');
+      th.textContent = text;
+      cRow.appendChild(th);
+    });
+    cHead.appendChild(cRow);
+    clerkTable.appendChild(cHead);
+    const cBody = document.createElement('tbody');
+    dayColumns.forEach(day => {
+      const tr = document.createElement('tr');
+      const tdDay = document.createElement('td');
+      tdDay.textContent = `${day} (${availCounts[day]})`;
+      tr.appendChild(tdDay);
+      const tdDocs = document.createElement('td');
+      const docs = clerks[day].clerks;
+      tdDocs.textContent = docs && docs.length ? docs.join(', ') : 'None';
+      tr.appendChild(tdDocs);
+      const tdNote = document.createElement('td');
+      tdNote.innerHTML = clerks[day].flag ? '<span class="warning">Insufficient clerks available</span>' : '';
+      tr.appendChild(tdNote);
+      cBody.appendChild(tr);
+    });
+    clerkTable.appendChild(cBody);
+    clerkingDiv.appendChild(clerkTable);
+    // Reveal results section
+    document.getElementById('results-section').classList.remove('hidden');
+    // Show print buttons and attach handlers
+    const printDiv = document.getElementById('print-buttons');
+    if (printDiv) {
+      printDiv.classList.remove('hidden');
+      const weeklyBtn = document.getElementById('print-weekly-btn');
+      const indivBtn = document.getElementById('print-indiv-btn');
+      if (weeklyBtn) {
+        weeklyBtn.onclick = function() {
+          // Print assignments table including weekly header
+          printSection('assignments-table', 'Weekly Team Allocation');
+        };
+      }
+      if (indivBtn) {
+        indivBtn.onclick = function() {
+          // Print individual schedules
+          printSection('individual-schedules', 'Individual Schedules');
+        };
+      }
+      const exportBtn = document.getElementById('export-excel-btn');
+      if (exportBtn) {
+        exportBtn.onclick = function() {
+          exportToExcel(rotaData, dayColumns, assignments, clerks, shiftInfo, originalWorkbook);
+        };
+      }
+    }
+
+    // Build individual schedules per doctor
+    const individualContainer = document.getElementById('individual-schedules');
+    if (individualContainer) {
+      individualContainer.remove();
+    }
+    const indivDiv = document.createElement('div');
+    indivDiv.id = 'individual-schedules';
+    const indivHeader = document.createElement('h2');
+    indivHeader.textContent = 'Individual Schedules';
+    indivDiv.appendChild(indivHeader);
+    // Compute schedule mapping: doctor -> day -> category
+    const schedule = {};
+    // Collect all doctor names from rotaData (excluding absences)
+    rotaData.forEach(row => {
+      const name = row['Name'];
+      if (!schedule[name]) schedule[name] = {};
+    });
+    // Fill schedule for each day
+    dayColumns.forEach(day => {
+      const dayAssign = assignments[day];
+      // For each category, assign doctor(s)
+      Object.entries(dayAssign).forEach(([cat, docVal]) => {
+        // unify Team C1 and Team C2 to 'Team C' for display
+        let dispCat = cat;
+        if (cat === 'Team C1' || cat === 'Team C2') dispCat = 'Team C';
+        if (cat === 'Theatres') dispCat = 'Theatres';
+        if (!docVal) return;
+        if (Array.isArray(docVal)) {
+          docVal.forEach(name => {
+            if (!schedule[name]) schedule[name] = {};
+            schedule[name][day] = dispCat;
+          });
+        } else {
+          const name = docVal;
+          if (!schedule[name]) schedule[name] = {};
+          schedule[name][day] = dispCat;
+        }
+      });
+      // Doctors not assigned remain undefined for that day
+    });
+    // Mark night shifts in the schedule
+    dayColumns.forEach(day => {
+      const list = nightAssignments[day] || [];
+      list.forEach(name => {
+        if (!schedule[name]) schedule[name] = {};
+        schedule[name][day] = 'Night';
+      });
+    });
+    // Build table for individual schedules
+    const indivTable = document.createElement('table');
+    const iHead = document.createElement('thead');
+    const iRow = document.createElement('tr');
+    const thName = document.createElement('th');
+    thName.textContent = 'Doctor';
+    iRow.appendChild(thName);
+    dayColumns.forEach(day => {
+      const th = document.createElement('th');
+      th.textContent = `${day} (${availCounts[day]})`;
+      iRow.appendChild(th);
+    });
+    iHead.appendChild(iRow);
+    indivTable.appendChild(iHead);
+    const iBody = document.createElement('tbody');
+    Object.keys(schedule)
+      .sort((a,b) => a.localeCompare(b))
+      .forEach(name => {
+        // Skip Locum Cover or PP entries if they have no assignments for any day
+        const lowerName = name.toLowerCase();
+        if ((lowerName.includes('locum cover') || lowerName === 'pp' || lowerName.includes('pp')) ) {
+          let hasAssign = false;
+          for (const day of dayColumns) {
+            if (schedule[name] && schedule[name][day]) {
+              hasAssign = true;
+              break;
+            }
+          }
+          if (!hasAssign) {
+            return; // skip adding row for this person
+          }
+        }
+        const tr = document.createElement('tr');
+        const tdName = document.createElement('td');
+        tdName.textContent = name;
+        tr.appendChild(tdName);
+        dayColumns.forEach(day => {
+          const td = document.createElement('td');
+          const cat = schedule[name][day] || '';
+          td.textContent = cat;
+          tr.appendChild(td);
+        });
+        iBody.appendChild(tr);
+      });
+    indivTable.appendChild(iBody);
+    indivDiv.appendChild(indivTable);
+    document.getElementById('results-section').appendChild(indivDiv);
+  });
+
+  // Function to export rota to Excel with color formatting
+  function exportToExcel(rotaData, dayColumns, assignments, clerks, shiftInfo, originalWorkbook) {
+    if (!originalWorkbook) {
+      alert('Original workbook not available. Please reload the Excel file.');
+      return;
+    }
+
+    // Clone the original workbook structure - copy all sheets first
+    const wb = XLSX.utils.book_new();
+    
+    // Copy all sheets from original workbook to preserve all tabs and formatting
+    originalWorkbook.SheetNames.forEach(name => {
+      if (name !== 'SHO Rota') {
+        // Copy non-SHO Rota sheets as-is
+        const sheet = originalWorkbook.Sheets[name];
+        const copiedSheet = JSON.parse(JSON.stringify(sheet));
+        XLSX.utils.book_append_sheet(wb, copiedSheet, name);
+      }
+    });
+    
+    const sheetName = 'SHO Rota';
+    
+    // Get the original SHO Rota sheet
+    const originalSheet = originalWorkbook.Sheets[sheetName] || originalWorkbook.Sheets[originalWorkbook.SheetNames[0]];
+    
+    // Convert original sheet to array of arrays to manipulate
+    const data = XLSX.utils.sheet_to_json(originalSheet, { header: 1, defval: '' });
+    
+    // Helper function to convert RGB to Excel ARGB color hex (with FF prefix for full opacity)
+    function rgbToHex(r, g, b) {
+      return ('FF' + ('00' + r.toString(16)).slice(-2) + 
+             ('00' + g.toString(16)).slice(-2) + 
+             ('00' + b.toString(16)).slice(-2)).toUpperCase();
+    }
+    
+    // Define colors matching the template exactly
+    const colors = {
+      clerking: rgbToHex(0, 176, 80),      // Green #00B050
+      onCall: rgbToHex(218, 150, 148),     // Red #DA9694
+      secondOnCall: rgbToHex(255, 192, 0), // Orange #FFC000
+      night: rgbToHex(149, 179, 215),      // Blue #95B3D7
+      offDay: rgbToHex(217, 217, 217),     // Grey
+      border: rgbToHex(0, 0, 0),           // Black for borders
+      // Team background colors
+      teamA: rgbToHex(228, 223, 236),      // #E4DFEC
+      teamB: rgbToHex(218, 238, 243),      // #DAEEF3
+      teamC: rgbToHex(253, 233, 217),      // #FDE9D9
+      teamD: rgbToHex(235, 241, 222),      // #EBF1DE
+      ppLocums: rgbToHex(242, 242, 242)    // #F2F2F2
+    };
+    
+    // Create a new sheet with cell objects - deep copy entire original sheet with all formatting
+    const newSheet = {};
+    const range = XLSX.utils.decode_range(originalSheet['!ref']);
+    
+    // Copy all cells from original sheet with deep copy to preserve all formatting
+    for (let R = range.s.r; R <= range.e.r; ++R) {
+      for (let C = range.s.c; C <= range.e.c; ++C) {
+        const cellAddress = XLSX.utils.encode_cell({ r: R, c: C });
+        const originalCell = originalSheet[cellAddress];
+        if (originalCell) {
+          // Deep copy the cell including all styling
+          newSheet[cellAddress] = JSON.parse(JSON.stringify(originalCell));
+        }
+      }
+    }
+    
+    // Ensure row 1 (index 0) has red text and center alignment
+    for (let C = range.s.c; C <= range.e.c; ++C) {
+      const cellAddress = XLSX.utils.encode_cell({ r: 0, c: C });
+      if (newSheet[cellAddress]) {
+        if (!newSheet[cellAddress].s) newSheet[cellAddress].s = {};
+        if (!newSheet[cellAddress].s.font) newSheet[cellAddress].s.font = {};
+        if (!newSheet[cellAddress].s.alignment) newSheet[cellAddress].s.alignment = {};
+        
+        newSheet[cellAddress].s.font.color = { rgb: 'FFFF0000' }; // Red text
+        newSheet[cellAddress].s.font.bold = true;
+        newSheet[cellAddress].s.alignment.horizontal = 'center';
+        newSheet[cellAddress].s.alignment.vertical = 'center';
+      }
+    }
+    
+    // Ensure row 3 (index 2 - DAILY ADMISSIONS) has red background
+    for (let C = range.s.c; C <= range.e.c; ++C) {
+      const cellAddress = XLSX.utils.encode_cell({ r: 2, c: C });
+      if (newSheet[cellAddress]) {
+        if (!newSheet[cellAddress].s) newSheet[cellAddress].s = {};
+        if (!newSheet[cellAddress].s.fill) newSheet[cellAddress].s.fill = {};
+        if (!newSheet[cellAddress].s.font) newSheet[cellAddress].s.font = {};
+        
+        newSheet[cellAddress].s.fill = {
+          patternType: 'solid',
+          fgColor: { rgb: rgbToHex(255, 124, 128) } // #FF7C80
+        };
+        newSheet[cellAddress].s.font.bold = true;
+      }
+    }
+    
+    // Ensure team names (column A, starting from row 4) are vertical and preserve other formatting
+    for (let R = 3; R <= range.e.r; ++R) {
+      const cellAddress = XLSX.utils.encode_cell({ r: R, c: 0 }); // Column A
+      if (newSheet[cellAddress] && newSheet[cellAddress].v) {
+        if (!newSheet[cellAddress].s) newSheet[cellAddress].s = {};
+        if (!newSheet[cellAddress].s.alignment) newSheet[cellAddress].s.alignment = {};
+        
+        newSheet[cellAddress].s.alignment.textRotation = 90; // Vertical text
+      }
+    }
+    
+    // Find header row and day columns in the original sheet
+    const header = data[1] || [];
+    if (!header[1]) header[1] = 'Name';
+    
+    // Map day columns to column indices
+    const dayColumnIndices = {};
+    header.forEach((col, idx) => {
+      if (dayColumns.includes(col)) {
+        dayColumnIndices[col] = idx;
+      }
+    });
+    
+    // Build a lookup for doctor names to row indices and track teams
+    const doctorRowMap = {};
+    const teamRanges = {}; // Track all ranges for each team (array of ranges per team)
+    let currentTeam = null;
+    let teamStartRow = null;
+    let lastRowWithData = 3; // Track the last row that has actual data
+    let lastTeamRow = 3; // Track the last row of the current team (excluding PP/Locums)
+    
+    for (let i = 3; i < data.length; i++) {
+      const row = data[i];
+      
+      // Track the last row with actual data
+      if (row.length > 0 && (row[0] || row[1])) {
+        lastRowWithData = i;
+      }
+      
+      if (row.length === 0) continue;
+      
+      const teamCell = row[0];
+      const nameCell = row[1];
+      
+      // Check if this is a PP/Locum row (name is exactly "PP" or starts with "Locum" or "PP " but no team cell)
+      const nameUpper = nameCell ? nameCell.toString().toUpperCase().trim() : '';
+      const isLocumRow = !teamCell && nameCell && (
+        nameUpper === 'PP' || 
+        nameUpper.startsWith('LOCUM') || 
+        nameUpper.startsWith('PP ')
+      );
+      
+      if (teamCell) {
+        // Save the previous team's end row
+        if (currentTeam && teamStartRow !== null) {
+          if (!teamRanges[currentTeam]) {
+            teamRanges[currentTeam] = [];
+          }
+          teamRanges[currentTeam].push({ start: teamStartRow, end: lastTeamRow });
+        }
+        // Start a new team
+        currentTeam = teamCell;
+        teamStartRow = i;
+        lastTeamRow = i;
+      } else if (isLocumRow && currentTeam && teamStartRow !== null) {
+        // Close the current team before locums start
+        if (!teamRanges[currentTeam]) {
+          teamRanges[currentTeam] = [];
+        }
+        teamRanges[currentTeam].push({ start: teamStartRow, end: lastTeamRow });
+        // Start PP/Locum team
+        currentTeam = 'PP/Locum Cover';
+        teamStartRow = i;
+        lastTeamRow = i;
+      } else if (currentTeam) {
+        // Update last team row for current team
+        lastTeamRow = i;
+      }
+      
+      if (nameCell) {
+        doctorRowMap[nameCell] = i;
+      }
+    }
+    
+    // Save the last team's range
+    if (currentTeam && teamStartRow !== null) {
+      if (!teamRanges[currentTeam]) {
+        teamRanges[currentTeam] = [];
+      }
+      teamRanges[currentTeam].push({ start: teamStartRow, end: lastTeamRow });
+    }
+    
+    // Preserve original merges from the template, but filter out column A/D merges in team rows only
+    const originalMerges = originalSheet['!merges'] || [];
+    const merges = originalMerges.filter(merge => {
+      // Keep ALL merges in header rows (rows 1-3, indices 0-2)
+      const isHeaderRow = merge.s.r <= 2;
+      if (isHeaderRow) {
+        return true; // Keep all header merges
+      }
+      
+      // For team rows (row 4+, index 3+), exclude merges that touch column A or D
+      const touchesA = merge.s.c <= 0 && merge.e.c >= 0;
+      const touchesD = merge.s.c <= 3 && merge.e.c >= 3;
+      // Keep merges that don't touch A and don't touch D
+      return !touchesA && !touchesD;
+    });
+    
+    const teamColorMap = {}; // Store team colors to apply later
+    
+    Object.entries(teamRanges).forEach(([team, ranges]) => {
+      // Determine the team background color
+      let teamColor = null;
+      const teamUpper = team.toUpperCase();
+      
+      if (teamUpper.includes('TEAM A')) {
+        teamColor = colors.teamA;
+      } else if (teamUpper.includes('TEAM B')) {
+        teamColor = colors.teamB;
+      } else if (teamUpper.includes('TEAM C')) {
+        teamColor = colors.teamC;
+      } else if (teamUpper.includes('TEAM D') || teamUpper === 'TEAM D') {
+        teamColor = colors.teamD;
+      } else if (teamUpper.includes('PP') || teamUpper.includes('LOCUM')) {
+        teamColor = colors.ppLocums;
+      }
+      
+      if (!teamColor) return; // Skip if no matching team color
+      
+      // Store team color info for later application
+      const isPPLocums = teamUpper.includes('PP') || teamUpper.includes('LOCUM');
+      ranges.forEach(range => {
+        teamColorMap[`${range.start}-${range.end}`] = { color: teamColor, isPPLocums: isPPLocums };
+        
+        // Add column A merge for this team block (column A is index 0)
+        if (range.start <= range.end) {
+          merges.push({
+            s: { r: range.start, c: 0 }, // Start cell (column A)
+            e: { r: range.end, c: 0 }    // End cell (column A)
+          });
+        }
+        
+        // Add column D merge for this team block (column D is index 3)
+        if (range.start <= range.end) {
+          merges.push({
+            s: { r: range.start, c: 3 }, // Start cell (column D)
+            e: { r: range.end, c: 3 }    // End cell (column D)
+          });
+        }
+      });
+    });
+    
+    // Update merges in the sheet
+    newSheet['!merges'] = merges;
+    
+    // Apply team background colors BEFORE borders so they get preserved
+    Object.entries(teamRanges).forEach(([team, ranges]) => {
+      ranges.forEach(range => {
+        const key = `${range.start}-${range.end}`;
+        const teamInfo = teamColorMap[key];
+        if (!teamInfo) return;
+        
+        const maxCol = teamInfo.isPPLocums ? 10 : 3; // All columns for PP/Locums, A-D for others
+        
+        // Apply background color to all cells in the team range
+        for (let R = range.start; R <= range.end; R++) {
+          for (let C = 0; C <= maxCol; C++) {
+            const cellAddress = XLSX.utils.encode_cell({ r: R, c: C });
+            
+            // Ensure cell exists
+            if (!newSheet[cellAddress]) {
+              newSheet[cellAddress] = { t: 's', v: '', s: {} };
+            }
+            if (!newSheet[cellAddress].s) {
+              newSheet[cellAddress].s = {};
+            }
+            
+            // Set team background color
+            newSheet[cellAddress].s.fill = {
+              patternType: 'solid',
+              fgColor: { rgb: teamInfo.color }
+            };
+          }
+        }
+      });
+    });
+    
+    // Apply borders with light borders within teams and thick borders between teams
+    // IMPORTANT: Preserve existing fill colors (especially for columns J and K, and team colors in A-D)
+    const borderEndRow = Math.max(lastRowWithData, 20); // Ensure borders go to at least row 21 (0-indexed: 20)
+    for (let R = 1; R <= borderEndRow; ++R) { // From row 2 down to at least row 21
+      for (let C = 0; C <= 10; ++C) { // Columns A-K (0-indexed: 0-10)
+        const cellAddress = XLSX.utils.encode_cell({ r: R, c: C });
+        if (!newSheet[cellAddress]) {
+          newSheet[cellAddress] = { t: 's', v: '' };
+        }
+        if (!newSheet[cellAddress].s) newSheet[cellAddress].s = {};
+        
+        // Preserve existing fill color if it exists
+        const existingFill = newSheet[cellAddress].s.fill ? JSON.parse(JSON.stringify(newSheet[cellAddress].s.fill)) : null;
+        
+        // Determine if this row's top or bottom is at a team boundary
+        let isTopBoundary = false;
+        let isBottomBoundary = false;
+        
+        for (const [team, ranges] of Object.entries(teamRanges)) {
+          for (const range of ranges) {
+            if (R === range.start) {
+              isTopBoundary = true;
+            }
+            if (R === range.end) {
+              isBottomBoundary = true;
+            }
+          }
+        }
+        
+        // Column D (index 3) has special border rules: only borders at team boundaries
+        if (C === 3) {
+          newSheet[cellAddress].s.border = {
+            top: { style: isTopBoundary ? 'medium' : 'none', color: { rgb: 'FF000000' } },
+            bottom: { style: isBottomBoundary ? 'medium' : 'none', color: { rgb: 'FF000000' } },
+            left: { style: 'none', color: { rgb: 'FF000000' } },
+            right: { style: 'none', color: { rgb: 'FF000000' } }
+          };
+        } else {
+          // All other columns - thick at team boundaries, thin within teams
+          newSheet[cellAddress].s.border = {
+            top: { style: R === 1 || isTopBoundary ? 'medium' : 'thin', color: { rgb: 'FF000000' } },
+            bottom: { style: isBottomBoundary ? 'medium' : 'thin', color: { rgb: 'FF000000' } },
+            left: { style: C === 0 ? 'medium' : 'thin', color: { rgb: 'FF000000' } },
+            right: { style: C === 10 ? 'medium' : 'thin', color: { rgb: 'FF000000' } }
+          };
+        }
+        
+        // Restore the fill color if it existed
+        if (existingFill) {
+          newSheet[cellAddress].s.fill = existingFill;
+        } 
+        // Note: Don't add grey fill to empty cells here - team colors should be preserved
+        
+        // Ensure bold text and center alignment
+        if (!newSheet[cellAddress].s.font) newSheet[cellAddress].s.font = {};
+        if (!newSheet[cellAddress].s.alignment) newSheet[cellAddress].s.alignment = {};
+        
+        newSheet[cellAddress].s.font.bold = true;
+        newSheet[cellAddress].s.alignment.horizontal = 'center';
+        newSheet[cellAddress].s.alignment.vertical = 'center';
+        newSheet[cellAddress].s.alignment.wrapText = true;
+      }
+    }
+    
+    // Grey out empty cells in columns E-K - FORCE grey for empty cells regardless of template fills
+    for (let R = 3; R <= borderEndRow; ++R) { // Start from row 4 (index 3) where doctors are
+      for (let C = 4; C <= 10; ++C) { // Columns E-K (indices 4-10)
+        const cellAddress = XLSX.utils.encode_cell({ r: R, c: C });
+        
+        // Ensure cell exists
+        if (!newSheet[cellAddress]) {
+          newSheet[cellAddress] = { t: 's', v: '', s: {} };
+        }
+        if (!newSheet[cellAddress].s) {
+          newSheet[cellAddress].s = {};
+        }
+        
+        // Robust empty check: handles undefined, null, empty string, and whitespace
+        const cellValue = newSheet[cellAddress].v;
+        const hasValue = cellValue != null && String(cellValue).trim() !== '';
+        
+        // Force grey for empty cells (override any template fills)
+        if (!hasValue) {
+          newSheet[cellAddress].s.fill = {
+            patternType: 'solid',
+            fgColor: { rgb: colors.offDay }
+          };
+        }
+      }
+    }
+    
+    // Grey out rows 22-24 (A22-K24) if they don't have assignments - FORCE grey regardless of existing fills
+    for (let R = 21; R <= 23; ++R) { // Rows 22-24 (indices 21-23)
+      for (let C = 0; C <= 10; ++C) { // Columns A-K (indices 0-10)
+        const cellAddress = XLSX.utils.encode_cell({ r: R, c: C });
+        
+        // Ensure cell exists
+        if (!newSheet[cellAddress]) {
+          newSheet[cellAddress] = { t: 's', v: '', s: {} };
+        }
+        if (!newSheet[cellAddress].s) {
+          newSheet[cellAddress].s = {};
+        }
+        
+        // Robust empty check: handles undefined, null, empty string, and whitespace
+        const cellValue = newSheet[cellAddress].v;
+        const hasValue = cellValue != null && String(cellValue).trim() !== '';
+        
+        // For rows 22-24, FORCE grey if empty (override any team colors)
+        if (!hasValue) {
+          newSheet[cellAddress].s.fill = {
+            patternType: 'solid',
+            fgColor: { rgb: colors.offDay }
+          };
+        }
+      }
+    }
+    
+    // Update cells with generated assignments and apply colors
+    dayColumns.forEach(day => {
+      const colIdx = dayColumnIndices[day];
+      if (colIdx === undefined) return;
+      
+      const dayAssignments = assignments[day];
+      const dayShift = shiftInfo[day];
+      const dayClerks = (clerks[day] && clerks[day].clerks) || [];
+      
+      // Build a map of doctor -> assignment text and color
+      const doctorAssignmentMap = {};
+      
+      // Process each category assignment
+      Object.entries(dayAssignments).forEach(([category, doctorVal]) => {
+        if (!doctorVal) return;
+        
+        let doctors = [];
+        if (Array.isArray(doctorVal)) {
+          doctors = doctorVal;
+        } else {
+          doctors = [doctorVal];
+        }
+        
+        doctors.forEach(doctorName => {
+          const shift = dayShift[doctorName];
+          if (!shift) return;
+          
+          let assignmentText = '';
+          let fillColor = null;
+          
+          // Get original shift text to extract time information
+          const originalShift = rotaData.find(r => r.Name === doctorName);
+          let originalText = '';
+          let timePrefix = '';
+          
+          if (originalShift && originalShift[day]) {
+            originalText = originalShift[day].toString();
+            const shiftUpper = originalText.toUpperCase();
+            
+            // Check if originally off/leave first
+            if (/^(AL|ZERO|INDUCTION|WEISS)\b/.test(shiftUpper)) {
+              assignmentText = originalText;
+              fillColor = colors.offDay;
+              doctorAssignmentMap[doctorName] = { text: assignmentText, color: fillColor };
+              return;
+            }
+            
+            // Extract time prefix (0700-1700, 0800-1700, etc.)
+            const timeMatch = originalText.match(/(\d{4}-?\d{4})/);
+            if (timeMatch) {
+              timePrefix = timeMatch[1];
+              // Ensure format is XXXX-XXXX
+              if (!timePrefix.includes('-')) {
+                timePrefix = timePrefix.substring(0, 4) + '-' + timePrefix.substring(4);
+              }
+            }
+          }
+          
+          // Determine assignment text and color based on shift type
+          if (shift.night) {
+            // Night shift - blue
+            assignmentText = 'NIGHT';
+            fillColor = colors.night;
+          } else if (shift.on_call) {
+            // On-call shift - check if LD BLEEP or LD SECOND
+            const shiftText = originalText.toUpperCase();
+            if (shiftText.includes('LD BLEEP')) {
+              assignmentText = 'LD BLEEP';
+              fillColor = colors.onCall;
+            } else if (shiftText.includes('LD SECOND')) {
+              assignmentText = 'LD SECOND';
+              fillColor = colors.secondOnCall;
+            }
+            // Preserve any additional text after on-call designation
+            const parts = originalText.split(/LD BLEEP|LD SECOND/i);
+            if (parts.length > 1 && parts[1].trim()) {
+              assignmentText += '\n' + parts[1].trim();
+            }
+          } else if (dayClerks.includes(doctorName)) {
+            // Clerking duty - green - clerking shifts start at 0700
+            let catText = category;
+            if (category === 'Team C1' || category === 'Team C2') catText = 'Team C';
+            
+            // Clerking shifts always start at 0700
+            assignmentText = '0700-1700\n' + catText;
+            fillColor = colors.clerking;
+          } else if (category === 'Theatres') {
+            // Theatre assignment - starts at 0800
+            assignmentText = '0800-1700\nTheatres';
+            fillColor = null;
+          } else {
+            // Regular ward assignment - starts at 0800
+            let catText = category;
+            if (category === 'Team C1' || category === 'Team C2') catText = 'Team C';
+            
+            // Non-clerking ward shifts start at 0800
+            assignmentText = '0800-1700\n' + catText;
+            fillColor = null;
+          }
+          
+          doctorAssignmentMap[doctorName] = { text: assignmentText, color: fillColor };
+        });
+      });
+      
+      // Also handle doctors with nights, on-call, or off days who aren't in assignments
+      Object.entries(dayShift).forEach(([doctorName, shift]) => {
+        // Skip if already processed
+        if (doctorAssignmentMap[doctorName]) return;
+        
+        const originalShift = rotaData.find(r => r.Name === doctorName);
+        if (!originalShift || !originalShift[day]) return;
+        
+        const originalText = originalShift[day].toString();
+        const shiftUpper = originalText.toUpperCase();
+        
+        let assignmentText = originalText;
+        let fillColor = null;
+        
+        // Check if off/leave
+        if (/^(AL|ZERO|INDUCTION|WEISS)\b/.test(shiftUpper)) {
+          fillColor = colors.offDay;
+        } else if (shift.night) {
+          // Night shift
+          assignmentText = 'NIGHT';
+          fillColor = colors.night;
+        } else if (shift.on_call) {
+          // On-call shift - check if LD BLEEP or LD SECOND
+          if (shiftUpper.includes('LD BLEEP')) {
+            assignmentText = 'LD BLEEP';
+            fillColor = colors.onCall;
+          } else if (shiftUpper.includes('LD SECOND')) {
+            assignmentText = 'LD SECOND';
+            fillColor = colors.secondOnCall;
+          }
+          // Preserve any additional text after on-call designation
+          const parts = originalText.split(/LD BLEEP|LD SECOND/i);
+          if (parts.length > 1 && parts[1].trim()) {
+            assignmentText += '\n' + parts[1].trim();
+          }
+        }
+        
+        if (fillColor) {
+          doctorAssignmentMap[doctorName] = { text: assignmentText, color: fillColor };
+        }
+      });
+      
+      // Apply assignments to cells - preserve original formatting
+      Object.entries(doctorAssignmentMap).forEach(([doctorName, assignment]) => {
+        const rowIdx = doctorRowMap[doctorName];
+        if (rowIdx === undefined) return;
+        
+        const cellAddress = XLSX.utils.encode_cell({ r: rowIdx, c: colIdx });
+        
+        // Get the existing cell (already copied from original)
+        if (!newSheet[cellAddress]) {
+          newSheet[cellAddress] = { t: 's', v: '', s: {} };
+        }
+        
+        // Deep clone the original cell style to preserve all formatting
+        const originalStyle = newSheet[cellAddress].s ? JSON.parse(JSON.stringify(newSheet[cellAddress].s)) : {};
+        
+        // Update only the value
+        newSheet[cellAddress].v = assignment.text;
+        
+        // Start with the original style
+        newSheet[cellAddress].s = originalStyle;
+        
+        // Only add fill color if specified, otherwise leave original fill intact
+        if (assignment.color) {
+          if (!newSheet[cellAddress].s.fill) {
+            newSheet[cellAddress].s.fill = {};
+          }
+          newSheet[cellAddress].s.fill = {
+            patternType: 'solid',
+            fgColor: { rgb: assignment.color }
+          };
+        }
+        
+        // Ensure wrap text is enabled for multi-line content
+        if (!newSheet[cellAddress].s.alignment) {
+          newSheet[cellAddress].s.alignment = {};
+        }
+        newSheet[cellAddress].s.alignment.wrapText = true;
+      });
+    });
+    
+    // Set the range for the new sheet
+    newSheet['!ref'] = originalSheet['!ref'];
+    
+    // Preserve all sheet properties from original
+    if (originalSheet['!cols']) {
+      newSheet['!cols'] = originalSheet['!cols'];
+    }
+    
+    if (originalSheet['!rows']) {
+      newSheet['!rows'] = originalSheet['!rows'];
+    }
+    
+    // Note: Do NOT preserve original merges - we've already set our custom merges earlier
+    
+    // Preserve print settings
+    if (originalSheet['!margins']) {
+      newSheet['!margins'] = originalSheet['!margins'];
+    }
+    
+    // Preserve other sheet properties
+    if (originalSheet['!protect']) {
+      newSheet['!protect'] = originalSheet['!protect'];
+    }
+    
+    if (originalSheet['!autofilter']) {
+      newSheet['!autofilter'] = originalSheet['!autofilter'];
+    }
+    
+    // FINAL STEP: Explicitly ensure J3 and K3 have #FF7C80 background (do this last to prevent overwriting)
+    ['J3', 'K3'].forEach(cellRef => {
+      if (!newSheet[cellRef]) {
+        newSheet[cellRef] = { t: 's', v: '', s: {} };
+      }
+      if (!newSheet[cellRef].s) newSheet[cellRef].s = {};
+      if (!newSheet[cellRef].s.font) newSheet[cellRef].s.font = {};
+      
+      newSheet[cellRef].s.fill = {
+        patternType: 'solid',
+        fgColor: { rgb: rgbToHex(255, 124, 128) } // #FF7C80
+      };
+      newSheet[cellRef].s.font.bold = true;
+    });
+    
+    // Add the updated SHO Rota sheet to workbook
+    // Insert it at the beginning to maintain original sheet order
+    wb.SheetNames.unshift(sheetName);
+    wb.Sheets[sheetName] = newSheet;
+    
+    // Generate filename with current date
+    const today = new Date();
+    const dateStr = today.toISOString().split('T')[0];
+    const filename = `Neurosurgical_Rota_${dateStr}.xlsx`;
+    
+    // Write and download the file with styles preserved
+    XLSX.writeFile(wb, filename, { cellStyles: true, bookType: 'xlsx' });
+  }
+  </script>
+  <script>
+  // Function to print a specific section by element ID
+  function printSection(elementId, title) {
+    const elem = document.getElementById(elementId);
+    if (!elem) {
+      alert('Nothing to print!');
+      return;
+    }
+    // Clone the element's HTML content
+    const content = elem.innerHTML;
+    const printWindow = window.open('', '', 'width=1000,height=700');
+    printWindow.document.write('<html><head><title>' + title + '</title>');
+    // Minimal styling for print: replicate table styling
+    printWindow.document.write(`\n<style>
+      body { font-family: Arial, Helvetica, sans-serif; margin: 20px; color: #2c3e50; }
+      h1 { font-size: 24px; margin-bottom: 10px; }
+      table { border-collapse: collapse; width: 100%; margin-top: 10px; }
+      th, td { border: 1px solid #444; padding: 6px 8px; text-align: left; }
+      th { background-color: #f2f2f2; }
+      tr:nth-child(even) { background-color: #fafafa; }
+    </style>`);
+    printWindow.document.write('</head><body>');
+    printWindow.document.write('<h1>' + title + '</h1>');
+    printWindow.document.write(content);
+    printWindow.document.write('</body></html>');
+    printWindow.document.close();
+    printWindow.focus();
+    // Delay printing slightly to ensure rendering
+    setTimeout(function() {
+      printWindow.print();
+      printWindow.close();
+    }, 250);
+  }
+  </script>
+</body>
+</html>
