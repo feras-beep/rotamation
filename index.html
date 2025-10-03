@@ -201,41 +201,12 @@
 
 
   <script>
-  // Treats null/undefined/blank (including formula blanks "") values as empty
-  function isEffectivelyEmpty(value) {
-    if (value === undefined || value === null) return true;
-    let strValue;
-    if (typeof value === 'string') {
-      strValue = value;
-    } else if (typeof value === 'number') {
-      return false;
-    } else if (typeof value === 'boolean') {
-      return false;
-    } else if (value && typeof value.toString === 'function') {
-      strValue = value.toString();
-    } else {
-      return false;
-    }
-
-    const cleaned = strValue.replace(/\u200b/g, '').trim();
-    if (cleaned === '') return true;
-
-    // Remove wrapping straight or smart quotes before final emptiness check
-    const withoutQuotes = cleaned.replace(/^[\"\u201C\u201D]+|[\"\u201C\u201D]+$/g, '').trim();
-    return withoutQuotes === '';
-  }
-
-  function stripWrappingQuotes(value) {
-    if (typeof value !== 'string') return value;
-    return value.replace(/^[\"\u201C\u201D]+|[\"\u201C\u201D]+$/g, '');
-  }
-
   // Utility to parse a single shift cell into structured data
   function parseShift(str) {
-    if (isEffectivelyEmpty(str)) {
+    if (!str || typeof str !== 'string' || str.trim() === '' || str.trim() === '\u200b') {
       return { available: false, start_time: null, assignment: null, on_call: false, night: false };
     }
-    const s = stripWrappingQuotes(str.toString().replace(/\u200b/g, '').trim()).toUpperCase();
+    const s = str.trim().toUpperCase();
     // Leave keywords (annual leave, study leave, zero/induction/weiss)
     // Include 'SL' for study leave
     if (/^(AL|SL|ZERO|INDUCTION|WEISS)\b/.test(s)) {
@@ -1680,39 +1651,19 @@
     newSheet['!merges'] = merges;
     
     // Apply team background colors BEFORE borders so they get preserved
-    let lastTeamDRow = null;
     Object.entries(teamRanges).forEach(([team, ranges]) => {
-      const teamUpper = team.toUpperCase();
-      const isTeamD = teamUpper.includes('TEAM D');
       ranges.forEach(range => {
         const key = `${range.start}-${range.end}`;
         const teamInfo = teamColorMap[key];
         if (!teamInfo) return;
-
+        
         const maxCol = teamInfo.isPPLocums ? 10 : 3; // All columns for PP/Locums, A-D for others
-
-        if (isTeamD) {
-          if (lastTeamDRow === null || range.end > lastTeamDRow) {
-            lastTeamDRow = range.end;
-          }
-        }
-
-        const firmFillTemplate = (() => {
-          for (let probeRow = range.start; probeRow <= range.end; probeRow++) {
-            const probeAddress = XLSX.utils.encode_cell({ r: probeRow, c: 2 });
-            const probeCell = originalSheet[probeAddress];
-            if (probeCell && probeCell.s && probeCell.s.fill) {
-              return JSON.parse(JSON.stringify(probeCell.s.fill));
-            }
-          }
-          return null;
-        })();
-
+        
         // Apply background color to all cells in the team range
         for (let R = range.start; R <= range.end; R++) {
           for (let C = 0; C <= maxCol; C++) {
             const cellAddress = XLSX.utils.encode_cell({ r: R, c: C });
-
+            
             // Ensure cell exists
             if (!newSheet[cellAddress]) {
               newSheet[cellAddress] = { t: 's', v: '', s: {} };
@@ -1720,25 +1671,8 @@
             if (!newSheet[cellAddress].s) {
               newSheet[cellAddress].s = {};
             }
-
-            if (C === 2) {
-              // Preserve original firm colors (including blanks) by copying the template fill
-              const originalCell = originalSheet[cellAddress];
-              const originalFill = originalCell && originalCell.s && originalCell.s.fill
-                ? JSON.parse(JSON.stringify(originalCell.s.fill))
-                : null;
-              if (originalFill) {
-                newSheet[cellAddress].s.fill = originalFill;
-                continue;
-              }
-              if (firmFillTemplate) {
-                newSheet[cellAddress].s.fill = JSON.parse(JSON.stringify(firmFillTemplate));
-                continue;
-              }
-              // Fall back to the team color if the template cell had no fill defined
-            }
-
-            // Set team background color for non-firm columns (or if no original firm fill exists)
+            
+            // Set team background color
             newSheet[cellAddress].s.fill = {
               patternType: 'solid',
               fgColor: { rgb: teamInfo.color }
@@ -1747,8 +1681,6 @@
         }
       });
     });
-
-    const afterTeamDStartRow = (lastTeamDRow !== null ? lastTeamDRow + 1 : 21);
     
     // Apply borders with light borders within teams and thick borders between teams
     // IMPORTANT: Preserve existing fill colors (especially for columns J and K, and team colors in A-D)
@@ -1814,12 +1746,11 @@
       }
     }
     
-    // Grey out empty cells in columns A-K (except firm column C) - FORCE grey regardless of template fills
+    // Grey out empty cells in columns E-K - FORCE grey for empty cells regardless of template fills
     for (let R = 3; R <= borderEndRow; ++R) { // Start from row 4 (index 3) where doctors are
-      for (let C = 0; C <= 10; ++C) { // Columns A-K (indices 0-10)
-        if (C === 2) continue; // Preserve firm colours in column C
+      for (let C = 4; C <= 10; ++C) { // Columns E-K (indices 4-10)
         const cellAddress = XLSX.utils.encode_cell({ r: R, c: C });
-
+        
         // Ensure cell exists
         if (!newSheet[cellAddress]) {
           newSheet[cellAddress] = { t: 's', v: '', s: {} };
@@ -1830,9 +1761,10 @@
         
         // Robust empty check: handles undefined, null, empty string, and whitespace
         const cellValue = newSheet[cellAddress].v;
-
+        const hasValue = cellValue != null && String(cellValue).trim() !== '';
+        
         // Force grey for empty cells (override any template fills)
-        if (isEffectivelyEmpty(cellValue)) {
+        if (!hasValue) {
           newSheet[cellAddress].s.fill = {
             patternType: 'solid',
             fgColor: { rgb: colors.offDay }
@@ -1869,8 +1801,9 @@
         if (!newSheet[cellAddress].s) newSheet[cellAddress].s = {};
         // Determine if cell is empty
         const value = newSheet[cellAddress].v;
+        const hasVal = value != null && String(value).trim() !== '';
         // Grey fill for empty cells
-        if (isEffectivelyEmpty(value)) {
+        if (!hasVal) {
           newSheet[cellAddress].s.fill = {
             patternType: 'solid',
             fgColor: { rgb: colors.offDay }
@@ -1901,8 +1834,8 @@
       }
     }
     
-    // Grey out any rows after Team D (starting at row after lastTeamDRow or row 22) if empty
-    for (let R = afterTeamDStartRow; R <= range.e.r; ++R) {
+    // Grey out rows 22-24 (A22-K24) if they don't have assignments - FORCE grey regardless of existing fills
+    for (let R = 21; R <= 23; ++R) { // Rows 22-24 (indices 21-23)
       for (let C = 0; C <= 10; ++C) { // Columns A-K (indices 0-10)
         const cellAddress = XLSX.utils.encode_cell({ r: R, c: C });
         // Ensure cell exists
@@ -1914,8 +1847,9 @@
         }
         // Robust empty check: handles undefined, null, empty string, and whitespace
         const cellValue = newSheet[cellAddress].v;
-        // For rows after Team D, FORCE grey if empty (override any team colors)
-        if (isEffectivelyEmpty(cellValue)) {
+        const hasValue = cellValue != null && String(cellValue).trim() !== '';
+        // For rows 22-24, FORCE grey if empty (override any team colors)
+        if (!hasValue) {
           newSheet[cellAddress].s.fill = {
             patternType: 'solid',
             fgColor: { rgb: colors.offDay }
@@ -1940,7 +1874,8 @@
           }
           if (!newSheet[addr].s) newSheet[addr].s = {};
           const val = newSheet[addr].v;
-          if (isEffectivelyEmpty(val)) {
+          const hasVal = val != null && String(val).trim() !== '';
+          if (!hasVal) {
             newSheet[addr].s.fill = {
               patternType: 'solid',
               fgColor: { rgb: colors.offDay }
@@ -1969,11 +1904,8 @@
         const cellAddress = XLSX.utils.encode_cell({ r: rIdx, c: colIndex });
         // Get original shift text from rotaData
         const originalVal = row[dayName];
-        const originalTextRaw = originalVal != null ? originalVal.toString() : '';
-        const isOriginalEmpty = isEffectivelyEmpty(originalTextRaw);
-        const cleanedOriginal = isOriginalEmpty ? '' : originalTextRaw.replace(/\u200b/g, '').trim();
-        const normalizedForChecks = isOriginalEmpty ? '' : stripWrappingQuotes(cleanedOriginal);
-        const shiftUpper = normalizedForChecks.toUpperCase();
+        const originalText = originalVal != null ? originalVal.toString() : '';
+        const shiftUpper = originalText.toUpperCase();
         let fillColor = null;
         let cellText = '';
         if (shiftUpper.includes('NIGHT')) {
@@ -1989,7 +1921,7 @@
           // Off/leave days (including SL)
           cellText = '';
           fillColor = colors.offDay;
-        } else if (isOriginalEmpty) {
+        } else if (!originalText || originalText.trim() === '') {
           // Truly empty cell: off day color
           cellText = '';
           fillColor = colors.offDay;
@@ -2014,7 +1946,7 @@
           newSheet[cellAddress].t = 's';
         } else {
           // If no fillColor and cell is empty, fill grey
-          if (isOriginalEmpty) {
+          if (!originalText || originalText.trim() === '') {
             newSheet[cellAddress].s.fill = {
               patternType: 'solid',
               fgColor: { rgb: colors.offDay }
@@ -2076,14 +2008,10 @@
           let originalText = '';
           let timePrefix = '';
           
-          if (originalShift && originalShift[day] !== undefined) {
-            const rawOriginal = originalShift[day];
-            const rawText = rawOriginal != null ? rawOriginal.toString() : '';
-            const originalIsEmpty = isEffectivelyEmpty(rawText);
-            originalText = originalIsEmpty ? '' : rawText.replace(/\u200b/g, '').trim();
-            const normalizedShiftText = stripWrappingQuotes(originalText);
-            const shiftUpper = normalizedShiftText.toUpperCase();
-
+          if (originalShift && originalShift[day]) {
+            originalText = originalShift[day].toString();
+            const shiftUpper = originalText.toUpperCase();
+            
             // Check if originally off/leave first
             if (/^(AL|ZERO|INDUCTION|WEISS)\b/.test(shiftUpper)) {
               assignmentText = originalText;
@@ -2110,7 +2038,7 @@
             fillColor = colors.night;
           } else if (shift.on_call) {
             // On-call shift - check if LD BLEEP or LD SECOND
-            const shiftText = normalizedShiftText.toUpperCase();
+            const shiftText = originalText.toUpperCase();
             if (shiftText.includes('LD BLEEP')) {
               assignmentText = 'LD BLEEP';
               fillColor = colors.onCall;
@@ -2119,7 +2047,7 @@
               fillColor = colors.secondOnCall;
             }
             // Preserve any additional text after on-call designation
-            const parts = normalizedShiftText.split(/LD BLEEP|LD SECOND/i);
+            const parts = originalText.split(/LD BLEEP|LD SECOND/i);
             if (parts.length > 1 && parts[1].trim()) {
               assignmentText += '\n' + parts[1].trim();
             }
@@ -2161,15 +2089,12 @@
         const originalShift = rotaData.find(r => r.Name === doctorName);
         if (!originalShift || !originalShift[day]) return;
         
-        let originalText = originalShift[day] != null ? originalShift[day].toString() : '';
-        const originalIsEmpty = isEffectivelyEmpty(originalText);
-        originalText = originalIsEmpty ? '' : originalText.replace(/\u200b/g, '').trim();
-        const normalizedShiftText = stripWrappingQuotes(originalText);
-        const shiftUpper = normalizedShiftText.toUpperCase();
-
+        const originalText = originalShift[day].toString();
+        const shiftUpper = originalText.toUpperCase();
+        
         let assignmentText = originalText;
         let fillColor = null;
-
+        
         // Check if off/leave, including study leave (SL)
         if (/^(AL|SL|ZERO|INDUCTION|WEISS)\b/.test(shiftUpper)) {
           fillColor = colors.offDay;
@@ -2187,7 +2112,7 @@
             fillColor = colors.secondOnCall;
           }
           // Preserve any additional text after on-call designation
-          const parts = normalizedShiftText.split(/LD BLEEP|LD SECOND/i);
+          const parts = originalText.split(/LD BLEEP|LD SECOND/i);
           if (parts.length > 1 && parts[1].trim()) {
             assignmentText += '\n' + parts[1].trim();
           }
