@@ -201,41 +201,12 @@
 
 
   <script>
-  // Treats null/undefined/blank (including formula blanks "") values as empty
-  function isEffectivelyEmpty(value) {
-    if (value === undefined || value === null) return true;
-    let strValue;
-    if (typeof value === 'string') {
-      strValue = value;
-    } else if (typeof value === 'number') {
-      return false;
-    } else if (typeof value === 'boolean') {
-      return false;
-    } else if (value && typeof value.toString === 'function') {
-      strValue = value.toString();
-    } else {
-      return false;
-    }
-
-    const cleaned = strValue.replace(/\u200b/g, '').trim();
-    if (cleaned === '') return true;
-
-    // Remove wrapping straight or smart quotes before final emptiness check
-    const withoutQuotes = cleaned.replace(/^[\"\u201C\u201D]+|[\"\u201C\u201D]+$/g, '').trim();
-    return withoutQuotes === '';
-  }
-
-  function stripWrappingQuotes(value) {
-    if (typeof value !== 'string') return value;
-    return value.replace(/^[\"\u201C\u201D]+|[\"\u201C\u201D]+$/g, '');
-  }
-
   // Utility to parse a single shift cell into structured data
   function parseShift(str) {
-    if (isEffectivelyEmpty(str)) {
+    if (!str || typeof str !== 'string' || str.trim() === '' || str.trim() === '\u200b') {
       return { available: false, start_time: null, assignment: null, on_call: false, night: false };
     }
-    const s = stripWrappingQuotes(str.toString().replace(/\u200b/g, '').trim()).toUpperCase();
+    const s = str.trim().toUpperCase();
     // Leave keywords (annual leave, study leave, zero/induction/weiss)
     // Include 'SL' for study leave
     if (/^(AL|SL|ZERO|INDUCTION|WEISS)\b/.test(s)) {
@@ -1790,9 +1761,10 @@
         
         // Robust empty check: handles undefined, null, empty string, and whitespace
         const cellValue = newSheet[cellAddress].v;
-
+        const hasValue = cellValue != null && String(cellValue).trim() !== '';
+        
         // Force grey for empty cells (override any template fills)
-        if (isEffectivelyEmpty(cellValue)) {
+        if (!hasValue) {
           newSheet[cellAddress].s.fill = {
             patternType: 'solid',
             fgColor: { rgb: colors.offDay }
@@ -1829,8 +1801,9 @@
         if (!newSheet[cellAddress].s) newSheet[cellAddress].s = {};
         // Determine if cell is empty
         const value = newSheet[cellAddress].v;
+        const hasVal = value != null && String(value).trim() !== '';
         // Grey fill for empty cells
-        if (isEffectivelyEmpty(value)) {
+        if (!hasVal) {
           newSheet[cellAddress].s.fill = {
             patternType: 'solid',
             fgColor: { rgb: colors.offDay }
@@ -1874,11 +1847,9 @@
         }
         // Robust empty check: handles undefined, null, empty string, and whitespace
         const cellValue = newSheet[cellAddress].v;
-        if (C === 2) {
-          continue; // Preserve firm colours in column C
-        }
+        const hasValue = cellValue != null && String(cellValue).trim() !== '';
         // For rows 22-24, FORCE grey if empty (override any team colors)
-        if (isEffectivelyEmpty(cellValue)) {
+        if (!hasValue) {
           newSheet[cellAddress].s.fill = {
             patternType: 'solid',
             fgColor: { rgb: colors.offDay }
@@ -1903,7 +1874,8 @@
           }
           if (!newSheet[addr].s) newSheet[addr].s = {};
           const val = newSheet[addr].v;
-          if (isEffectivelyEmpty(val)) {
+          const hasVal = val != null && String(val).trim() !== '';
+          if (!hasVal) {
             newSheet[addr].s.fill = {
               patternType: 'solid',
               fgColor: { rgb: colors.offDay }
@@ -1932,11 +1904,8 @@
         const cellAddress = XLSX.utils.encode_cell({ r: rIdx, c: colIndex });
         // Get original shift text from rotaData
         const originalVal = row[dayName];
-        const originalTextRaw = originalVal != null ? originalVal.toString() : '';
-        const isOriginalEmpty = isEffectivelyEmpty(originalTextRaw);
-        const cleanedOriginal = isOriginalEmpty ? '' : originalTextRaw.replace(/\u200b/g, '').trim();
-        const normalizedForChecks = isOriginalEmpty ? '' : stripWrappingQuotes(cleanedOriginal);
-        const shiftUpper = normalizedForChecks.toUpperCase();
+        const originalText = originalVal != null ? originalVal.toString() : '';
+        const shiftUpper = originalText.toUpperCase();
         let fillColor = null;
         let cellText = '';
         if (shiftUpper.includes('NIGHT')) {
@@ -1952,7 +1921,7 @@
           // Off/leave days (including SL)
           cellText = '';
           fillColor = colors.offDay;
-        } else if (isOriginalEmpty) {
+        } else if (!originalText || originalText.trim() === '') {
           // Truly empty cell: off day color
           cellText = '';
           fillColor = colors.offDay;
@@ -1977,7 +1946,7 @@
           newSheet[cellAddress].t = 's';
         } else {
           // If no fillColor and cell is empty, fill grey
-          if (isOriginalEmpty) {
+          if (!originalText || originalText.trim() === '') {
             newSheet[cellAddress].s.fill = {
               patternType: 'solid',
               fgColor: { rgb: colors.offDay }
@@ -2039,14 +2008,10 @@
           let originalText = '';
           let timePrefix = '';
           
-          if (originalShift && originalShift[day] !== undefined) {
-            const rawOriginal = originalShift[day];
-            const rawText = rawOriginal != null ? rawOriginal.toString() : '';
-            const originalIsEmpty = isEffectivelyEmpty(rawText);
-            originalText = originalIsEmpty ? '' : rawText.replace(/\u200b/g, '').trim();
-            const normalizedShiftText = stripWrappingQuotes(originalText);
-            const shiftUpper = normalizedShiftText.toUpperCase();
-
+          if (originalShift && originalShift[day]) {
+            originalText = originalShift[day].toString();
+            const shiftUpper = originalText.toUpperCase();
+            
             // Check if originally off/leave first
             if (/^(AL|ZERO|INDUCTION|WEISS)\b/.test(shiftUpper)) {
               assignmentText = originalText;
@@ -2073,7 +2038,7 @@
             fillColor = colors.night;
           } else if (shift.on_call) {
             // On-call shift - check if LD BLEEP or LD SECOND
-            const shiftText = normalizedShiftText.toUpperCase();
+            const shiftText = originalText.toUpperCase();
             if (shiftText.includes('LD BLEEP')) {
               assignmentText = 'LD BLEEP';
               fillColor = colors.onCall;
@@ -2082,7 +2047,7 @@
               fillColor = colors.secondOnCall;
             }
             // Preserve any additional text after on-call designation
-            const parts = normalizedShiftText.split(/LD BLEEP|LD SECOND/i);
+            const parts = originalText.split(/LD BLEEP|LD SECOND/i);
             if (parts.length > 1 && parts[1].trim()) {
               assignmentText += '\n' + parts[1].trim();
             }
@@ -2124,15 +2089,12 @@
         const originalShift = rotaData.find(r => r.Name === doctorName);
         if (!originalShift || !originalShift[day]) return;
         
-        let originalText = originalShift[day] != null ? originalShift[day].toString() : '';
-        const originalIsEmpty = isEffectivelyEmpty(originalText);
-        originalText = originalIsEmpty ? '' : originalText.replace(/\u200b/g, '').trim();
-        const normalizedShiftText = stripWrappingQuotes(originalText);
-        const shiftUpper = normalizedShiftText.toUpperCase();
-
+        const originalText = originalShift[day].toString();
+        const shiftUpper = originalText.toUpperCase();
+        
         let assignmentText = originalText;
         let fillColor = null;
-
+        
         // Check if off/leave, including study leave (SL)
         if (/^(AL|SL|ZERO|INDUCTION|WEISS)\b/.test(shiftUpper)) {
           fillColor = colors.offDay;
@@ -2150,7 +2112,7 @@
             fillColor = colors.secondOnCall;
           }
           // Preserve any additional text after on-call designation
-          const parts = normalizedShiftText.split(/LD BLEEP|LD SECOND/i);
+          const parts = originalText.split(/LD BLEEP|LD SECOND/i);
           if (parts.length > 1 && parts[1].trim()) {
             assignmentText += '\n' + parts[1].trim();
           }
